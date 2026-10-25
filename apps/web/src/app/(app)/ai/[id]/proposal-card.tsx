@@ -1,10 +1,11 @@
 "use client";
 
-import type { FlowDiff } from "@oicr/flow-schema";
-import { Check, ExternalLink, Sparkles, X } from "lucide-react";
+import { type FlowDiff, FlowDoc } from "@oicr/flow-schema";
+import { Check, ExternalLink, Network, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
+import { Canvas } from "@/components/canvas/canvas";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/card";
@@ -48,6 +49,15 @@ export function ProposalCard({ p, canBuild }: { p: ProposalView; canBuild: boole
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const open = p.status === "proposed";
+  const [showCanvas, setShowCanvas] = useState(false);
+  const parsed = useMemo(() => FlowDoc.safeParse(p.definition), [p.definition]);
+  const highlights = useMemo(() => {
+    const h: Record<string, "added" | "changed" | "moved"> = {};
+    for (const s of p.diff.moved) h[s.id] = "moved";
+    for (const s of p.diff.changed) h[s.id] = "changed";
+    if (p.editsExisting) for (const s of p.diff.added) h[s.id] = "added";
+    return h;
+  }, [p.diff, p.editsExisting]);
 
   return (
     <section aria-label={`Proposal: ${p.name}`} className="rounded-xl border-2 border-accent/30 bg-panel p-4">
@@ -103,6 +113,24 @@ export function ProposalCard({ p, canBuild }: { p: ProposalView; canBuild: boole
           </p>
         )}
       </div>
+
+      {parsed.success && (
+        <div className="mt-3">
+          <Button size="sm" variant="secondary" onClick={() => setShowCanvas((v) => !v)} aria-expanded={showCanvas}>
+            <Network aria-hidden /> {showCanvas ? "Hide canvas" : "Show on canvas"}
+          </Button>
+          {showCanvas && (
+            <div className="mt-3">
+              <Canvas
+                doc={parsed.data}
+                highlights={highlights}
+                height={380}
+                ariaLabel={`Proposed integration: ${p.name}`}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       <details className="mt-3">
         <summary className="cursor-pointer text-xs text-fg-muted">Show the definition</summary>

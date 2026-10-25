@@ -1,9 +1,19 @@
-import { can, connectionIndex, describeSchedule, getIntegration, listInstances, NotFoundError, orgs } from "@oicr/db";
-import type { Issue } from "@oicr/flow-schema";
+import {
+  can,
+  connectionIndex,
+  describeSchedule,
+  getIntegration,
+  listConnections,
+  listInstances,
+  NotFoundError,
+  orgs,
+} from "@oicr/db";
+import { FlowDoc, type Issue } from "@oicr/flow-schema";
 import { eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { EditWithAi } from "@/components/build-with-ai";
+import { FlowEditor } from "@/components/canvas/flow-editor";
 import { RunsTable } from "@/components/runs-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, PageHeader } from "@/components/ui/card";
@@ -12,6 +22,7 @@ import { db } from "@/lib/db";
 import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
 import { templatesFor } from "@/lib/templates";
+import { cn } from "@/lib/utils";
 import { DefinitionEditor } from "./definition-editor";
 import { Lifecycle } from "./lifecycle";
 import { ScheduleForm } from "./schedule-form";
@@ -22,19 +33,20 @@ export default async function IntegrationPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ fromAi?: string }>;
+  searchParams: Promise<{ fromAi?: string; view?: string }>;
 }) {
   const { id } = await params;
-  const { fromAi } = await searchParams;
+  const { fromAi, view } = await searchParams;
   if (!UUID.test(id)) notFound();
   const viewer = await requireViewer();
   const integration = await getIntegration(db, viewer, id).catch((e) => {
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-  const [runs, conns, [org]] = await Promise.all([
+  const [runs, conns, connRows, [org]] = await Promise.all([
     listInstances(db, viewer, { integrationId: id, limit: 10 }),
     connectionIndex(db, viewer.orgId),
+    listConnections(db, viewer),
     db.select({ slug: orgs.slug }).from(orgs).where(eq(orgs.id, viewer.orgId)),
   ]);
 
@@ -44,6 +56,8 @@ export default async function IntegrationPage({
   const canBuild = can(viewer.role, "build");
   const base = (process.env.BETTER_AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
   const triggerPath = def.trigger?.path && def.trigger.path !== "/" ? def.trigger.path : "";
+  const parsed = FlowDoc.safeParse(integration.definition);
+  const showCanvas = view !== "json" && parsed.success;
   const invokeConns = Object.entries(conns)
     .filter(([, c]) => c.role !== "trigger")
     .map(([k]) => k);
@@ -118,20 +132,54 @@ export default async function IntegrationPage({
       )}
 
       <Card className="mb-6 p-5">
-        <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <h2 className="font-medium">Definition</h2>
-          <span className="text-xs text-fg-muted">
-            JSON for now. The AI builder (phase 2) and the visual canvas (phase 3) edit this same document.
-          </span>
+          <nav aria-label="Definition view" className="flex rounded-lg border border-border p-0.5 text-sm">
+            {(["canvas", "json"] as const).map((v) => (
+              <Link
+                key={v}
+                href={`/integrations/${id}${v === "json" ? "?view=json" : ""}`}
+                aria-current={showCanvas === (v === "canvas") ? "page" : undefined}
+                className={cn(
+                  "rounded-md px-3 py-1",
+                  showCanvas === (v === "canvas") ? "bg-muted font-medium" : "text-fg-muted hover:text-fg",
+                )}
+              >
+                {v === "canvas" ? "Canvas" : "JSON"}
+              </Link>
+            ))}
+          </nav>
         </div>
-        <DefinitionEditor
-          id={id}
-          initial={integration.definition}
-          hash={integration.definitionHash}
-          initialErrors={integration.validationErrors as Issue[]}
-          locked={active || !canBuild}
-          templates={templatesFor(integration.style, invokeConns)}
-        />
+        {showCanvas && parsed.success ? (
+          <FlowEditor
+            integrationId={id}
+            initial={parsed.data}
+            hash={integration.definitionHash}
+            locked={active || !canBuild}
+            connections={connRows.map((c) => ({
+              identifier: c.identifier,
+              role: c.role,
+              status: c.status,
+              adapter: c.adapter,
+            }))}
+          />
+        ) : (
+          <>
+            {!parsed.success && (
+              <p className="mb-3 text-sm text-fg-muted">
+                The canvas needs a definition with a valid shape. Fix the problems below, save, then switch to Canvas.
+              </p>
+            )}
+            <DefinitionEditor
+              id={id}
+              initial={integration.definition}
+              hash={integration.definitionHash}
+              initialErrors={integration.validationErrors as Issue[]}
+              locked={active || !canBuild}
+              templates={templatesFor(integration.style, invokeConns)}
+            />
+          </>
+        )}
       </Card>
 
       <h2 className="mb-3 font-medium">Recent runs</h2>

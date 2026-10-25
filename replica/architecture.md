@@ -32,7 +32,7 @@ renames it before launch.
 | repo | pnpm workspaces + Turborepo | apps and packages in one place, fast cached builds |
 | web | Next.js 16 (App Router, React 19) | server actions + route handlers for the API; streaming for the AI chat |
 | UI | Tailwind CSS v4 + shadcn/ui + lucide icons | modern, accessible, our own components; tokens come from replica-design |
-| canvas | React Flow (@xyflow/react) + elkjs auto-layout | the standard for node editors; auto-layout means AI-built flows look tidy without hand placement |
+| canvas | React Flow (@xyflow/react) + our own tree layout | React Flow gives pan/zoom/rendering; a FlowDoc is a tree, so a small deterministic layout fits better than a general graph layout (elkjs) and keeps AI-built flows tidy |
 | mapper UI | custom two-tree component + Monaco for expressions | nothing off the shelf fits; Monaco gives autocomplete over the schema |
 | database | Postgres 16 (Neon or Supabase managed; plain Postgres self-hosted) | relational data + jsonb for flow docs, payload metadata, events |
 | ORM | Drizzle | SQL-first, typed, light migrations |
@@ -284,7 +284,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 | **0** ✅ | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
 | **1** ✅ | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
 | **2** ✅ | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
-| **3** | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
+| **3** ✅ | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
 | **4** | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
 | **5** | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
 | **6** | Operations | errors list, resubmit/discard (single + bulk), business identifiers, dashboard, AI "explain this failure" | S11, S20, S23, S24 | — | resubmit, discard, dashboard, explain |
@@ -352,3 +352,21 @@ Then: should-haves and could-haves by area, then the fixes
   shape is checked against a local fake of the API; the browser e2e runs the whole flow on
   recorded turns. `packages/ai/evals` holds 12 real requests graded by checks on the proposal.
   They need an API key and have **not been run yet**.
+
+**Phase 3 (done).** The canvas:
+
+- **Edits are pure functions** in `packages/flow-schema/src/edit.ts` (insert, remove, move, update,
+  new step per type, unique ids), shared by the canvas and anything else that edits a flow.
+- **Layout** (`apps/web/src/components/canvas/layout.ts`) is our own top-to-bottom tree layout:
+  lists are columns, loops/scopes/switches are frames with their columns side by side, "+" insert
+  points between steps. Deterministic and unit-tested (no overlaps, children inside frames,
+  every edge connects real nodes). elkjs from the plan was not needed.
+- **Editor**: palette, inspector per step type with live JSONata parse errors, undo (50 steps),
+  move up/down, delete, live validation with problem badges on steps (shape errors now carry the
+  step id and plain wording), save with the same hash check as the JSON editor. JSON stays as a tab.
+  Read-only while the integration is active.
+- **Replay** on the run page: steps coloured by outcome, loop counts ("ok ×2", "1/2 failed"), steps
+  that did not run dimmed; clicking a step opens its record.
+- **AI proposals** can be shown on the canvas with new and changed steps highlighted.
+- **Not yet**: drag and drop (moves are up/down buttons), copy/paste, collapsing containers,
+  editing variables and business identifiers outside the JSON view.

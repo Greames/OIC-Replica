@@ -1,4 +1,5 @@
 export * from "./diff.js";
+export * from "./edit.js";
 export { emptyFlow } from "./empty.js";
 export * from "./expressions.js";
 export * from "./hash.js";

@@ -197,5 +197,70 @@
       "type": "text",
       "text": "Done: the send step retries 3 times on timeouts and server errors."
     }
+  ],
+  [
+    {
+      "type": "tool_use",
+      "id": "s7",
+      "name": "propose_flow",
+      "input": {
+        "name": "Ticket router",
+        "summary": "Routes tickets by priority and answers the caller.",
+        "schedule": null,
+        "flow": {
+          "schemaVersion": 1,
+          "style": "application",
+          "trigger": {
+            "id": "trigger",
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "sync": true
+          },
+          "steps": [
+            {
+              "id": "route",
+              "type": "switch",
+              "label": "By priority",
+              "cases": [
+                {
+                  "when": "$trigger.priority = 'high'",
+                  "label": "High",
+                  "steps": [
+                    {
+                      "id": "urgent",
+                      "type": "log",
+                      "label": "Urgent",
+                      "message": "urgent {{$trigger.id}}"
+                    }
+                  ]
+                }
+              ],
+              "otherwise": [
+                {
+                  "id": "normal",
+                  "type": "log",
+                  "label": "Normal",
+                  "message": "normal {{$trigger.id}}"
+                }
+              ]
+            },
+            {
+              "id": "reply",
+              "type": "return",
+              "label": "Answer",
+              "status": 200,
+              "body": "{ \"queued\": true }"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  [
+    {
+      "type": "text",
+      "text": "Here is the router."
+    }
   ]
 ]

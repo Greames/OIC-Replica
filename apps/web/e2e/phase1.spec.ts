@@ -74,6 +74,7 @@ test("connect an API, build a scheduled integration, run it and inspect every st
   await expect(page.getByRole("heading", { name: "Orders to shop" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Activate" })).toBeDisabled();
 
+  await page.getByRole("link", { name: "JSON" }).click();
   const editor = page.getByLabel("Integration definition (JSON)");
   // A typo in the connection is caught with a readable message.
   await editor.fill(
@@ -133,6 +134,7 @@ test("build an HTTP integration from a template, test it, and call it with its t
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Echo" })).toBeVisible();
 
+  await page.getByRole("link", { name: "JSON" }).click();
   await page.getByLabel("Start from a template").selectOption({ label: "Echo (no connections needed)" });
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved. Ready to activate.")).toBeVisible();

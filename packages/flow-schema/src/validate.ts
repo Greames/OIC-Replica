@@ -46,11 +46,10 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
   if (!parsed.success) {
     return {
       ok: false,
-      errors: parsed.error.issues.map((i) => ({
-        code: "schema",
-        message: i.message,
-        path: i.path.map((p) => (typeof p === "symbol" ? String(p) : p)),
-      })),
+      errors: parsed.error.issues.map((i) => {
+        const path = i.path.map((p) => (typeof p === "symbol" ? String(p) : p));
+        return { code: "schema" as const, message: friendly(i), path, stepId: stepIdAtPath(input, path) };
+      }),
       warnings: [],
     };
   }
@@ -262,4 +261,29 @@ function expressionsOf(step: Step): { source: string; key: (string | number)[]; 
     default:
       return [];
   }
+}
+
+/** Plain-language wording for the shape errors people hit most. */
+function friendly(issue: { code: string; message: string; origin?: string; minimum?: unknown }): string {
+  if (issue.code === "too_small" && issue.origin === "array") {
+    return issue.minimum === 1 ? "Add at least one step here." : issue.message;
+  }
+  if (issue.code === "too_small" && issue.origin === "string") return "This is required.";
+  if (issue.code === "invalid_union" || issue.code === "invalid_discriminator")
+    return "Unknown step type, or required fields are missing.";
+  return issue.message;
+}
+
+/** The id of the innermost step a JSON path points into, for badges on the canvas. */
+function stepIdAtPath(input: unknown, path: (string | number)[]): string | undefined {
+  let node: unknown = input;
+  let id: string | undefined;
+  for (const key of path) {
+    if (node === null || typeof node !== "object") break;
+    node = (node as Record<string | number, unknown>)[key];
+    const maybe = node as { id?: unknown; type?: unknown } | undefined;
+    if (maybe && typeof maybe === "object" && typeof maybe.id === "string" && typeof maybe.type === "string")
+      id = maybe.id;
+  }
+  return id;
 }

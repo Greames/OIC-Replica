@@ -1,7 +1,9 @@
-import { getInstance, NotFoundError } from "@oicr/db";
+import { getInstance, getIntegration, NotFoundError } from "@oicr/db";
+import { FlowDoc } from "@oicr/flow-schema";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { StepStatus } from "@/components/canvas/canvas";
 import { formatDuration } from "@/components/runs-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge, Card, PageHeader } from "@/components/ui/card";
@@ -9,6 +11,7 @@ import { db } from "@/lib/db";
 import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
 import { AutoRefresh } from "./auto-refresh";
+import { RunCanvas } from "./run-canvas";
 
 function Payload({ label, value }: { label: string; value: unknown }) {
   if (value === null || value === undefined) return null;
@@ -31,6 +34,24 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
     throw e;
   });
   const live = run.status === "queued" || run.status === "running";
+  const integration = await getIntegration(db, viewer, run.integrationId).catch(() => null);
+  const doc = integration ? FlowDoc.safeParse(integration.definition) : null;
+  const sameVersion = integration?.definitionHash === run.definitionHash;
+  const statuses: Record<string, StepStatus> = {};
+  for (const s of run.steps) {
+    const cur = statuses[s.stepId];
+    const status =
+      cur?.status === "failed" || s.status === "failed"
+        ? "failed"
+        : cur?.status === "succeeded" || s.status === "succeeded"
+          ? "succeeded"
+          : "skipped";
+    statuses[s.stepId] = {
+      status,
+      runs: (cur?.runs ?? 0) + 1,
+      failed: (cur?.failed ?? 0) + (s.status === "failed" ? 1 : 0),
+    };
+  }
 
   return (
     <>
@@ -79,6 +100,20 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         </div>
       )}
 
+      {doc?.success && run.steps.length > 0 && (
+        <>
+          <h2 className="mt-8 mb-3 flex flex-wrap items-baseline gap-2 font-medium">
+            On the integration
+            {!sameVersion && (
+              <span className="text-xs font-normal text-fg-muted">
+                The integration changed after this run; showing its current version.
+              </span>
+            )}
+          </h2>
+          <RunCanvas doc={doc.data} statuses={statuses} />
+        </>
+      )}
+
       <h2 className="mt-8 mb-3 font-medium">Activity</h2>
       {run.steps.length === 0 ? (
         <Card className="p-5 text-sm text-fg-muted">{live ? "Waiting for the first step…" : "No steps ran."}</Card>
@@ -86,7 +121,11 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
         <ol className="flex flex-col gap-2">
           {run.steps.map((s) => (
             <li key={s.id}>
-              <details className="group rounded-xl border border-border bg-panel" open={s.status === "failed"}>
+              <details
+                className="group rounded-xl border border-border bg-panel"
+                open={s.status === "failed"}
+                data-step={s.stepId}
+              >
                 <summary className="flex cursor-pointer list-none flex-wrap items-center gap-3 px-4 py-3 text-sm">
                   <span className="w-6 text-right font-mono text-xs text-fg-muted">{s.seq}</span>
                   <span className="font-mono font-medium">{s.stepId}</span>

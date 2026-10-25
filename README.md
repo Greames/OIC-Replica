@@ -24,13 +24,13 @@ every step by hand.
 | 0 | Foundation: monorepo, auth + workspaces, projects, flow format, CI, Docker | done |
 | 1 | Vertical slice: REST connections, engine, worker, schedules, HTTP triggers, runs with every step | done |
 | 2 | AI builder: describe it in English, answer questions, review the diff, accept | done |
-| 3 | Visual canvas | next |
-| 4 | Every update: events, Slack/Telegram, MCP server, Hermes | |
+| 3 | Visual canvas: build and edit on a diagram, run replay, AI changes on the canvas | done |
+| 4 | Every update: events, Slack/Telegram, MCP server, Hermes | next |
 | 5–9 | Mapper, operations, adapters, AI hardening, product | |
 
 Details per phase: [replica/architecture.md](replica/architecture.md#build-order-one-phase-at-a-time).
 
-![A run with every step and its payloads](docs/screenshots/run.png)
+![The canvas editor](docs/screenshots/canvas-inspector.png)
 
 ## Run it
 

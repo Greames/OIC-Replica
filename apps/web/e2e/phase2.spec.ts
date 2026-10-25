@@ -61,6 +61,10 @@ test("describe an integration in English, answer a question, accept, run, then c
   await expect(page).toHaveURL(/\/observability\/runs\//);
   await expect(page.getByText("succeeded", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
   await expect(page.locator("ol")).toContainText("Order A2 failed: http_422");
+  // One of two orders failed: the replay canvas says so on the step.
+  await expect(
+    page.getByRole("figure", { name: "Run on the integration" }).locator('[data-step-id="send"]'),
+  ).toContainText("1/2 failed");
 
   // Change it by instruction
   await page.getByRole("link", { name: "Orders to shop" }).click();
@@ -79,6 +83,8 @@ test("describe an integration in English, answer a question, accept, run, then c
   await page.getByRole("button", { name: "Apply changes" }).click();
 
   await expect(page.getByRole("heading", { name: "Orders to shop", exact: true })).toBeVisible();
+  await expect(page.getByRole("figure", { name: "Integration canvas" }).locator('[data-step-id="send"]')).toBeVisible();
+  await page.getByRole("link", { name: "JSON" }).click();
   await expect(page.getByLabel("Integration definition (JSON)")).toHaveValue(/"attempts": 3/);
   await expect(page.getByText("ready", { exact: true })).toBeVisible();
 });

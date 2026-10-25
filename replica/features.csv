@@ -32,8 +32,8 @@ Kafka / message queue adapter,adapters,could,yes,no,
 Adapter SDK so new adapters are a plugin,adapters,must,no,partial,clone-only: makes the catalogue cheap
 Create application (event / request) integration,design,must,yes,yes,S05
 Create scheduled integration,design,must,yes,yes,S05
-Visual canvas with trigger invoke and actions,design,must,yes,no,S06
-Insert actions between nodes and inside branches,design,must,yes,no,
+Visual canvas with trigger invoke and actions,design,must,yes,yes,S06
+Insert actions between nodes and inside branches,design,must,yes,yes,
 Switch with routing expressions and otherwise,actions,must,yes,yes,
 For-each over repeating element,actions,must,yes,yes,
 While loop,actions,should,yes,yes,
@@ -45,8 +45,8 @@ Stitch (build payload incrementally),actions,should,yes,no,
 Logger action,actions,should,yes,yes,
 Wait action,actions,should,yes,yes,
 Call JavaScript library function,actions,could,yes,no,
-Canvas validation badges and errors panel,design,must,yes,partial,
-Cut copy paste and collapse on canvas,design,could,yes,no,
+Canvas validation badges and errors panel,design,must,yes,yes,
+Cut copy paste and collapse on canvas,design,could,yes,partial,
 Lock integration while another user edits,design,should,yes,no,
 Mapper with source and target trees and drag to map,mapper,must,yes,no,S08
 Mapper function library (string date math conditional),mapper,must,yes,no,
