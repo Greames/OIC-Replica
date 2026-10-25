@@ -1,0 +1,295 @@
+# Architecture: OIC-Replica (working name), an AI-first integration platform
+
+A rebuild of Oracle Integration 3's core features (see `recon.md`), with an AI
+builder as the main way to create integrations. Also: an MCP server, so
+agents like Hermes Agent can build, operate and report on integrations from
+Telegram, Slack and other chat apps. Working name only; `/replica-brand`
+renames it before launch.
+
+## Principles
+
+1. **One flow definition, three editors.** A typed JSON document (the
+   "FlowDoc") is the single source of truth. The canvas edits it, the AI
+   proposes changes to it, and the API/MCP read and write it. All three go
+   through the same validator. Getting this format right comes first.
+2. **AI proposes, humans dispose.** The model only ever creates `ai_changes`
+   (proposals). A person accepts them. Activation, deletion and secrets are
+   never available as model tools.
+3. **Everything is an event.** Every state change writes an `events` row in
+   the same transaction (outbox). The UI (live updates), webhooks,
+   Slack/Telegram and Hermes all read from that one stream. That is how
+   "every update" reaches you.
+4. **One database, one repo, two processes.** Postgres for data, queue and
+   events. A web app and a worker. No microservices.
+5. **Self-hostable from day one.** `docker compose up` runs the whole thing.
+   This is a selling point against OIC's per-instance hourly billing.
+
+## Stack
+
+| layer | choice | why |
+| --- | --- | --- |
+| language | TypeScript everywhere (Node 22) | one language for UI, engine, adapters and AI tools; shared Zod types |
+| repo | pnpm workspaces + Turborepo | apps and packages in one place, fast cached builds |
+| web | Next.js 15 (App Router, React 19) | server actions + route handlers for the API; streaming for the AI chat |
+| UI | Tailwind CSS v4 + shadcn/ui + lucide icons | modern, accessible, our own components; tokens come from replica-design |
+| canvas | React Flow (@xyflow/react) + elkjs auto-layout | the standard for node editors; auto-layout means AI-built flows look tidy without hand placement |
+| mapper UI | custom two-tree component + Monaco for expressions | nothing off the shelf fits; Monaco gives autocomplete over the schema |
+| database | Postgres 16 (Neon or Supabase managed; plain Postgres self-hosted) | relational data + jsonb for flow docs, payload metadata, events |
+| ORM | Drizzle | SQL-first, typed, light migrations |
+| queue / durable jobs | pg-boss on the same Postgres | durable, retryable jobs without new infra; swap for Temporal only if scale demands it |
+| flow engine | own interpreter in `packages/engine` | executes FlowDoc step by step, persists each step, resumable; the product's core, so we own it |
+| mapping language | JSONata | JSON-native, expressive, sandboxable, and LLMs write it well; replaces OIC's XSLT/XPath |
+| custom JS | isolated-vm | runs user JS libraries with memory/time limits and no network |
+| auth | Better Auth (email + Google, orgs plugin) | self-hostable, owns its tables in our Postgres, has organizations/roles built in |
+| secrets | AES-256-GCM envelope encryption, master key from env or a cloud KMS | credentials never leave the server; never sent to the model |
+| AI | Anthropic Claude via `@anthropic-ai/sdk`, tool use + streaming | strong at tool use and structured output. Default model `claude-sonnet-5-5` for the chat, `claude-opus-5-5` for hard builds/repairs, `claude-haiku-5-5` for summaries and event one-liners. Behind a small provider interface so others can be added |
+| agent protocol | MCP server (`@modelcontextprotocol/sdk`, streamable HTTP) | lets Hermes Agent, Claude Desktop, Claude Code or any MCP client drive the platform |
+| realtime | Server-Sent Events from Postgres LISTEN/NOTIFY | live run status and AI progress without a websocket service |
+| payload storage | S3-compatible (Cloudflare R2 / MinIO self-hosted) | payloads up to 1 GB never sit in Postgres |
+| email | Resend (SMTP fallback) | notifications and the email action |
+| payments | Stripe Billing, metered on messages/hour | mirrors how the market prices iPaaS (Phase 9) |
+| observability (our own) | OpenTelemetry + Sentry | traces across web → queue → engine → adapters |
+| tests | Vitest (unit), Playwright (e2e), an AI eval suite (`evals/`) | the eval suite measures the AI builder on 50+ real requests |
+| hosting | Docker images; Fly.io or Render for web + worker, Neon for Postgres, R2 for files | the worker is long-running, so not serverless-only; same images self-host |
+
+## Repo layout
+
+```
+apps/
+  web/            Next.js: UI, REST API (/api/v1), trigger endpoints (/t/...), SSE, AI chat
+  worker/         pg-boss consumers: engine runs, schedules, event dispatcher, deliveries
+  mcp/            MCP server (streamable HTTP), mounted in web or run alone
+packages/
+  flow-schema/    FlowDoc Zod schema, validator, diff/patch, JSON Schema export for the model
+  engine/         the interpreter: nodes, scopes, faults, loops, step persistence
+  adapters/       adapter SDK + rest, http-trigger, scheduler, email, then sftp, postgres, mysql, soap
+  mapping/        JSONata runtime, function library, lookups, schema inference from samples
+  ai/             provider interface, tools, system prompts, builder loop, guardrails
+  db/             Drizzle schema, migrations, repos (org-scoped data access)
+  events/         outbox writer, event types, formatters (one-liners for chat)
+  ui/             shared components, tokens
+evals/            AI builder eval cases + runner
+replica/          recon, architecture, features (this folder)
+docker-compose.yml  postgres, minio, web, worker, mcp
+```
+
+## The FlowDoc (sketch, finalised in Phase 0)
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "style": "scheduled",
+  "trigger": { "id": "t1", "type": "schedule" },
+  "variables": { "lastRun": { "type": "string" } },
+  "steps": [
+    { "id": "n1", "type": "invoke", "connection": "orders_db", "operation": "query",
+      "config": { "sql": "select * from orders where created_at > :since" },
+      "input": { "since": "$vars.lastRun" } },
+    { "id": "n2", "type": "forEach", "over": "$n1.rows", "as": "order", "steps": [
+      { "id": "n3", "type": "scope", "steps": [
+        { "id": "n4", "type": "invoke", "connection": "shop_api", "operation": "POST /orders",
+          "map": "{ \"external_id\": order.id, \"total_cents\": $round(order.total * 100) }" }
+      ], "onFault": [
+        { "id": "n5", "type": "notify", "channel": "email", "to": "ops@example.com",
+          "subject": "Order {{order.id}} failed", "body": "{{$fault.message}}" }
+      ] }
+    ] }
+  ],
+  "businessIds": [{ "name": "order", "expr": "order.id", "primary": true }]
+}
+```
+
+Node types (v1): `invoke`, `map`, `assign`, `switch`, `forEach`, `while`,
+`scope` (with `onFault`), `throw`, `rethrow`, `log`, `notify`, `wait`, `stop`,
+`return` (sync response), `js`. Ids are stable, so the AI can address
+nodes in edits ("insert after n4") and diffs stay small.
+
+## The AI builder
+
+A tool-use loop in `packages/ai`, streamed to S28. The model works only
+through tools. It never writes the FlowDoc as free text that someone pastes
+in.
+
+| tool | does | side effects |
+| --- | --- | --- |
+| `list_adapters` | adapters, their operations and connection fields | none |
+| `list_connections` | the org's connections (name, adapter, role, status; no secrets) | none |
+| `describe_operation` | request/response schema for a connection operation | may call the target's metadata endpoint (OpenAPI, DB columns) |
+| `infer_schema` | JSON Schema from a sample payload the user pasted | none |
+| `get_flow` | the current FlowDoc + hash | none |
+| `ask_user` | a clarifying question with optional choices (S28 card) | pauses the loop |
+| `request_connection` | asks the user to create a connection with given adapter + non-secret fields prefilled | creates a draft connection; the user enters secrets in S16 |
+| `propose_flow` / `propose_patch` | whole FlowDoc, or a JSON-patch against `get_flow` | validated; on failure, the errors go back to the model (max 3 repairs); on success, creates an `ai_changes` row |
+| `test_map` | runs a JSONata map against sample input | none |
+| `dry_run` | runs the proposed flow with mocked or sandboxed invokes | a `dry_run` instance |
+| `explain_instance` | reads an instance's steps + error | none |
+
+Guardrails: no activate/delete/secret tools. Payload samples are redacted for
+fields named like secrets. Every model call is logged in `ai_messages`
+(tokens metered in `usage_hourly`). `ai_changes.base_hash` must equal the
+current `definition_hash` at apply time, or the proposal is marked `stale`
+and re-planned. The eval suite (`evals/`) must pass before any prompt or
+model change ships.
+
+## Hermes Agent and "every update"
+
+Updates reach people three ways, all fed from the `events` outbox:
+
+1. **In the app.** Live via SSE (run status, AI progress, toasts).
+2. **Direct channels.** `notification_channels`: Slack incoming webhook,
+   Telegram bot, email, generic signed webhook. Filtered by event type and
+   severity. These work with no agent at all.
+3. **Hermes Agent (or any MCP client).** The `apps/mcp` server exposes:
+   - read: `list_projects`, `list_integrations`, `get_integration`,
+     `list_instances`, `get_instance`, `list_events(since_id, types?)`,
+     `get_usage`
+   - build: `start_ai_build(prompt)`, `continue_ai_build(session, answer)`,
+     `list_ai_changes`, `accept_ai_change` (only with the `build` scope)
+   - operate: `activate_integration`, `deactivate_integration`,
+     `resubmit_instance`, `pause_schedule` (only with the `operate` scope;
+     each one is a deliberate human-held capability, see below)
+
+   Hermes is added as an MCP server in its config with an API key. A Hermes
+   cron job (every few minutes) calls `list_events(since_id)` and posts the
+   new ones to your Telegram/Slack, keeping the cursor. Because Hermes has
+   memory and an LLM, it can also summarise ("3 failures on orders-sync since
+   9am, all 401 from shop_api; the token likely expired") and take
+   instructions back from the chat ("resubmit them", "build an integration
+   that..."). Keys carry scopes, so a read-only key only reports.
+
+   Verify against Hermes's current docs in Phase 4: its MCP config keys and
+   cron syntax. Third-party write-ups describe `mcp_servers` in
+   `~/.hermes/config.yaml` and a built-in scheduler that delivers to
+   connected platforms.
+
+Event types (v1): `integration.created|updated|activated|deactivated|activation_failed`,
+`instance.failed|succeeded` (succeeded off by default), `instance.resubmitted`,
+`schedule.paused`, `connection.test_failed`, `ai.change.proposed|accepted|rejected`,
+`ai.question` (the AI is waiting for an answer), `usage.threshold`.
+
+## Schema
+
+Tables: 19 (plus Better Auth's 4). Access rules: data-layer checks. Every
+repo function takes `{ orgId, role }` and no raw query runs without it. RLS
+can be added later. See `schema.sql`.
+
+## API
+
+Route handlers under `/api/v1` (session cookie or `Authorization: Bearer <api key>`).
+Server actions call the same repo functions.
+
+| method path | does | who | input | output | flow |
+| --- | --- | --- | --- | --- | --- |
+| GET /api/v1/projects | list projects | viewer+ | — | Project[] | F01 |
+| POST /api/v1/projects | create project | developer+ | name, identifier | Project | F01 |
+| GET /api/v1/adapters | adapter catalogue + schemas | viewer+ | — | Adapter[] | F01 |
+| GET /api/v1/connections | list | viewer+ | projectId? | Connection[] (no secrets) | F01 |
+| POST /api/v1/connections | create | developer+ | adapter, props, auth, secret | Connection | F01 F10 |
+| PATCH /api/v1/connections/:id | update | developer+ | partial | Connection | F01 |
+| POST /api/v1/connections/:id/test | test | developer+ | — | {ok, error} | F01 F09 |
+| GET /api/v1/integrations | list | viewer+ | projectId?, status? | Integration[] | F01 |
+| POST /api/v1/integrations | create | developer+ | name, style, definition? | Integration | F01 F02 |
+| GET /api/v1/integrations/:id | get with FlowDoc | viewer+ | — | Integration | F01 |
+| PUT /api/v1/integrations/:id/definition | save FlowDoc | developer+ | definition, baseHash | Integration or 409 | F01 F07 |
+| POST /api/v1/integrations/:id/validate | validate | developer+ | — | errors[] | F01 |
+| POST /api/v1/integrations/:id/activate | activate | developer+ (human only from UI; API key needs `operate`) | tracingLevel | Integration | F01 F07 |
+| POST /api/v1/integrations/:id/deactivate | deactivate | developer+ | — | Integration | F07 |
+| POST /api/v1/integrations/:id/versions | new version from current | developer+ | — | Integration | F07 |
+| POST /api/v1/integrations/:id/run | manual / test run | developer+ | payload | Instance | F01 |
+| PUT /api/v1/integrations/:id/schedule | set schedule | developer+ | kind, expression, tz | Schedule | F02 |
+| GET/POST/PATCH /api/v1/lookups | lookups CRUD + CSV import | developer+ | — | Lookup | F06 |
+| POST /api/v1/mapping/test | test a JSONata map | developer+ | expr, input | output or error | F10 |
+| GET /api/v1/instances | search runs | monitor+ | integrationId, status, businessId, from, to, cursor | Instance[] | F04 F05 |
+| GET /api/v1/instances/:id | run + steps | monitor+ | — | Instance + steps | F04 |
+| GET /api/v1/instances/:id/steps/:seq/payload | payload | monitor+ | in/out | stream | F04 |
+| POST /api/v1/instances/resubmit | resubmit one or many | monitor+ (`operate` for keys) | ids[] | Instance[] | F04 |
+| POST /api/v1/instances/discard | discard | monitor+ | ids[] | — | F04 |
+| GET /api/v1/dashboard | counters by window | monitor+ | window | stats | F04 |
+| POST /api/v1/ai/sessions | start AI build/edit | developer+ | prompt, projectId, integrationId? | session (SSE stream) | F10 F11 |
+| POST /api/v1/ai/sessions/:id/messages | answer / follow up | developer+ | text or choice | SSE stream | F10 |
+| POST /api/v1/ai/changes/:id/accept | apply a proposal (all or node ids) | developer+ | nodeIds? | Integration | F10 F11 |
+| POST /api/v1/ai/changes/:id/reject | reject | developer+ | reason? | — | F10 |
+| POST /api/v1/ai/instances/:id/explain | explain a failure | monitor+ | — | SSE stream | F12 |
+| GET /api/v1/events | event feed | viewer+ | sinceId, types | Event[] | Hermes |
+| GET /api/v1/events/stream | live events (SSE) | viewer+ | — | stream | all |
+| CRUD /api/v1/channels | notification channels | admin | kind, config, filters | Channel | Hermes |
+| CRUD /api/v1/api-keys | keys for API/MCP | admin | name, scopes | key (shown once) | Hermes |
+| POST /api/v1/import, GET /api/v1/projects/:id/export | move projects | admin | archive | report | F08 |
+| ANY /t/:org/:integration/:version/* | trigger endpoint for active application integrations | per-integration auth (basic / API key / OAuth) | payload | sync response or 202 | F01 F10 |
+| POST /mcp | MCP server (streamable HTTP) | API key with scopes | MCP | MCP | Hermes |
+
+Webhooks in: trigger endpoints (`/t/...`), Stripe (Phase 9), OAuth callbacks
+for authorization-code connections.
+Webhooks out: signed (`HMAC-SHA256`, `X-Signature`, event id for
+idempotency) to generic webhook channels; Slack and Telegram via their
+official APIs with the user's own webhook/bot token.
+
+Jobs (pg-boss, in `apps/worker`):
+
+| job | schedule | does |
+| --- | --- | --- |
+| `run-instance` | on demand | executes a FlowDoc; persists steps; writes events |
+| `scheduler-tick` | every 15 s | claims due `schedules` with `for update skip locked`, enqueues runs, computes next_run_at in the schedule's time zone |
+| `dispatch-events` | LISTEN on new events + every 5 s sweep | fans out to SSE, creates `deliveries` |
+| `deliver` | on demand, retries with backoff (1m, 5m, 30m, 2h) | posts to Slack/Telegram/webhook/email |
+| `meter` | every minute | rolls message and token counts into `usage_hourly` |
+| `retention` | daily 03:00 UTC | deletes payloads past the plan's retention, old steps and events |
+| `agent-heartbeat-check` | every minute (Phase 9) | marks agent groups offline |
+
+## The parts that bite
+
+- **Time zones:** schedules store an IANA zone and compute next_run_at
+  there, so DST shifts happen in the right place. All stored times are UTC.
+  The UI shows the user's zone.
+- **Idempotency:** trigger endpoints accept `Idempotency-Key`, with a unique
+  index per integration. Deliveries are unique per (event, channel). The
+  engine persists each step before moving on, so a crashed worker resumes at
+  the last finished step instead of re-invoking.
+- **Races:** two workers can never claim the same schedule
+  (`skip locked`). Saving a FlowDoc requires `baseHash` (409 on conflict).
+  AI proposals go stale if the flow changed underneath them. An overlapping
+  scheduled run is skipped unless `allow_overlap`.
+- **Sync timeouts:** application integrations that return a response are
+  capped (default 120 s, max 300 s as in OIC). Past that the caller gets 504
+  and the instance is marked failed and recoverable.
+- **Payload limits:** 100 MB structured, 10 MB for DB/queue adapters, 1 GB
+  binary, streamed to object storage. Enforced at the trigger and in each
+  adapter.
+- **Rate limits:** per-connection concurrency and requests-per-second in
+  adapter config. Per-org API and trigger rate limits. Per-org AI token
+  budgets.
+- **AI cost and failure:** token metering per org, a cap per session, a
+  repair loop limited to 3, cheap models for summaries, and prompt caching on
+  the system prompt and tool schemas.
+- **Security:** secrets are encrypted at rest and never logged or sent to
+  the model. User JS runs in isolated-vm with no network. Outbound invokes
+  block private IP ranges (SSRF) unless routed through an agent. Scoped API
+  keys.
+- **Multi-tenancy:** org_id on every row, checked in every repo function.
+  Payload storage keys are prefixed by org. Per-org queue fairness (a
+  pg-boss singleton key per org for heavy jobs).
+- **GDPR deletion:** deleting an org cascades all rows. Payload objects
+  deleted by prefix. Retention job by plan.
+- **Email deliverability:** Resend with a verified domain; notification
+  digests to avoid floods.
+
+## Build order (one phase at a time)
+
+Each phase ends with something you can click, a passing test suite, and an
+event feed that reports it. Feature rows refer to `features.csv`.
+
+| phase | name | delivers | screens | tables | routes |
+| --- | --- | --- | --- | --- | --- |
+| **0** | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
+| **1** | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
+| **2** | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
+| **3** | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
+| **4** | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
+| **5** | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
+| **6** | Operations | errors list, resubmit/discard (single + bulk), business identifiers, dashboard, AI "explain this failure" | S11, S20, S23, S24 | — | resubmit, discard, dashboard, explain |
+| **7** | Adapters | adapter SDK docs, SFTP, Postgres, MySQL, SOAP, email; build from an OpenAPI/WSDL the user provides | S07, S15 | — | adapters |
+| **8** | Hardening the AI | dry runs with mocked invokes, generated test data, eval suite to 50+ cases, Opus fallback on hard builds, prompt caching, per-org AI budgets | S13 | usage_hourly | dry-run |
+| **9** | Product | versions, import/export, roles UI, lookups/libraries (JS in isolated-vm), metering + Stripe billing, on-prem agent (could), self-host docs | S18, S19, S25 | libraries, agent_groups | import/export, billing |
+
+Then: should-haves and could-haves by area, then the fixes
+`/replica-entrepreneur` finds.
