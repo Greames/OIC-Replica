@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Cable, FolderKanban, Home, Settings, Table2, Workflow } from "lucide-react";
+import { Activity, BellRing, Cable, FolderKanban, Home, Settings, Table2, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ const items = [
   { href: "/connections", label: "Connections", icon: Cable },
   { href: "/lookups", label: "Lookups", icon: Table2 },
   { href: "/observability", label: "Observability", icon: Activity },
+  { href: "/activity", label: "Activity", icon: BellRing },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

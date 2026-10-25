@@ -3,6 +3,8 @@ import { createServer } from "node:http";
 
 const port = Number(process.env.MOCK_API_PORT ?? 4010);
 const received = [];
+// Webhook deliveries (notification channels), with their headers.
+const hooks = [];
 
 createServer((req, res) => {
   let body = "";
@@ -13,6 +15,11 @@ createServer((req, res) => {
       res.end(JSON.stringify(data));
     };
     if (req.url === "/_received") return send(200, received);
+    if (req.url === "/_hooks") return send(200, hooks);
+    if (req.method === "POST" && req.url?.startsWith("/hooks/")) {
+      hooks.push({ path: req.url, headers: req.headers, body });
+      return send(202, { ok: true });
+    }
     if (req.headers["x-api-key"] !== "k-123") return send(401, { error: "bad key" });
     if (req.url === "/health") return send(200, { ok: true });
     if (req.method === "GET" && req.url === "/orders") {

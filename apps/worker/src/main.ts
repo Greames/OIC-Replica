@@ -1,4 +1,12 @@
-import { claimDueSchedules, createDb, failStaleInstances, recoverStuckAiSessions } from "@oicr/db";
+import {
+  claimDueSchedules,
+  createDb,
+  EVENTS_CHANNEL,
+  emitEvent,
+  failStaleInstances,
+  recoverStuckAiSessions,
+} from "@oicr/db";
+import { deliverDue } from "@oicr/notify";
 import { executeInstance, getQueue, RUN_QUEUE, type RunJob, startRun, stopQueue } from "@oicr/runtime";
 
 // The worker: runs queued instances, fires schedules, and reaps runs whose
@@ -13,12 +21,47 @@ const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 4);
 const tickMs = Number(process.env.SCHEDULER_TICK_MS ?? 15_000);
 const staleAfterMs = Number(process.env.STALE_RUN_MINUTES ?? 30) * 60_000;
 const controller = new AbortController();
+const appUrl = process.env.APP_URL || process.env.BETTER_AUTH_URL || "http://localhost:3000";
+
+// Notifications: drain due deliveries now, then again on every new event and every 2 s.
+let delivering = false;
+let again = false;
+async function deliver(): Promise<void> {
+  if (delivering) {
+    again = true;
+    return;
+  }
+  delivering = true;
+  try {
+    do {
+      again = false;
+      for (let i = 0; i < 10; i++) {
+        const r = await deliverDue(db, { appUrl });
+        if (r.sent + r.retry + r.failed > 0) log("notifications", r);
+        else break;
+      }
+    } while (again);
+  } catch (e) {
+    log("notification error", { error: (e as Error).message });
+  } finally {
+    delivering = false;
+  }
+}
 
 async function schedulerTick(): Promise<void> {
   try {
     for (const due of await claimDueSchedules(db)) {
       if (due.skipped) {
         log("schedule skipped: previous run still active", { integration: due.integration.identifier });
+        await emitEvent(db, {
+          orgId: due.integration.orgId,
+          type: "schedule.skipped",
+          severity: "warning",
+          subjectType: "integration",
+          subjectId: due.integration.id,
+          summary: `"${due.integration.name}" skipped a scheduled run because the previous run is still going.`,
+          path: `/integrations/${due.integration.id}`,
+        });
         continue;
       }
       const r = await startRun(db, due.integration, {
@@ -52,9 +95,11 @@ async function main(): Promise<void> {
     log("run finished", { instance: instance.id, status: instance.status, ms: instance.durationMs });
   });
 
-  const timers = [setInterval(schedulerTick, tickMs), setInterval(reap, 60_000)];
+  await db.$client.listen(EVENTS_CHANNEL, () => void deliver());
+  const timers = [setInterval(schedulerTick, tickMs), setInterval(reap, 60_000), setInterval(deliver, 2_000)];
   void schedulerTick();
   void reap();
+  void deliver();
   log("worker started", { concurrency, tickMs });
 
   const shutdown = async (signal: string) => {

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@oicr/db": "workspace:*",
+    "@oicr/notify": "workspace:*",
     "@oicr/runtime": "workspace:*"
   },
   "devDependencies": {

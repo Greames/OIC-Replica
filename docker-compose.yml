@@ -46,6 +46,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
       AI_EFFORT: ${AI_EFFORT:-}
+      APP_URL: ${APP_URL:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
     ports: ["3000:3000"]
@@ -61,6 +62,7 @@ services:
     environment:
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
       SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
+      APP_URL: ${APP_URL:-${BETTER_AUTH_URL:-http://localhost:3000}}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}

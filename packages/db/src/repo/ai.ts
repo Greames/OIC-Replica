@@ -3,6 +3,7 @@ import type { Db } from "../client.js";
 import { aiChanges, aiMessages, aiSessions, type PendingQuestion } from "../schema/ai.js";
 import { projects } from "../schema/core.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
+import { emitEvent } from "./events.js";
 import { createIntegration, getIntegration, InvalidStateError, saveDefinition, setSchedule } from "./integrations.js";
 
 export type AiSession = typeof aiSessions.$inferSelect;
@@ -157,6 +158,15 @@ export async function createAiChange(
     .set({ status: "stale" })
     .where(and(eq(aiChanges.sessionId, args.sessionId), eq(aiChanges.status, "proposed")));
   const [row] = await db.insert(aiChanges).values(args).returning();
+  await emitEvent(db, {
+    orgId: args.orgId,
+    type: "ai.change.proposed",
+    subjectType: "ai_change",
+    subjectId: row!.id,
+    summary: `The AI proposed ${args.integrationId ? "changes to" : "a new integration:"} "${args.name}". Review it to apply.`,
+    path: `/ai/${args.sessionId}`,
+    data: { sessionId: args.sessionId, integrationId: args.integrationId ?? null },
+  });
   return row!;
 }
 
@@ -220,6 +230,15 @@ export async function acceptAiChange(db: Db, actor: Actor, id: string): Promise<
     .where(eq(aiChanges.id, id));
   // Follow-up requests in this conversation now edit that integration.
   await db.update(aiSessions).set({ integrationId }).where(eq(aiSessions.id, session.id));
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: "ai.change.accepted",
+    subjectType: "ai_change",
+    subjectId: id,
+    summary: `AI proposal for "${change.name}" was applied.`,
+    path: `/integrations/${integrationId}`,
+    data: { integrationId, sessionId: change.sessionId },
+  });
   return { integrationId };
 }
 
@@ -230,4 +249,11 @@ export async function rejectAiChange(db: Db, actor: Actor, id: string): Promise<
     .update(aiChanges)
     .set({ status: "rejected", decidedBy: actor.userId, decidedAt: new Date() })
     .where(eq(aiChanges.id, id));
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: "ai.change.rejected",
+    subjectType: "ai_change",
+    subjectId: id,
+    summary: "An AI proposal was discarded.",
+  });
 }

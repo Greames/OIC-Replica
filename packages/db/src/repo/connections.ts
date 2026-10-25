@@ -5,6 +5,7 @@ import type { Db } from "../client.js";
 import { connections } from "../schema/runtime.js";
 import { decryptSecret, encryptSecret } from "../secrets.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
+import { emitEvent } from "./events.js";
 
 export const ConnectionInput = z.object({
   name: z.string().trim().min(1, "Give the connection a name.").max(100),
@@ -162,6 +163,17 @@ export async function testConnection(db: Db, actor: Actor, id: string): Promise<
       lastTestError: result.ok ? null : result.message,
     })
     .where(eq(connections.id, id));
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: result.ok ? "connection.test_passed" : "connection.test_failed",
+    severity: result.ok ? "info" : "warning",
+    subjectType: "connection",
+    subjectId: id,
+    summary: result.ok
+      ? `Connection "${row.name}" passed its test.`
+      : `Connection "${row.name}" failed its test: ${result.message}`,
+    path: `/connections/${id}`,
+  });
   return result;
 }
 

@@ -158,10 +158,10 @@ Updates reach people three ways, all fed from the `events` outbox:
    instructions back from the chat ("resubmit them", "build an integration
    that..."). Keys carry scopes, so a read-only key only reports.
 
-   Verify against Hermes's current docs in Phase 4: its MCP config keys and
-   cron syntax. Third-party write-ups describe `mcp_servers` in
-   `~/.hermes/config.yaml` and a built-in scheduler that delivers to
-   connected platforms.
+   Checked against Hermes's docs in Phase 4: `mcp_servers.<name>.url` +
+   `headers` (+ `trust: untrusted`) for MCP, and webhook routes under
+   `platforms.webhook.extra.routes` with `deliver_only: true` for zero-token
+   pushes. See the Phase 4 notes and `docs/hermes.md`.
 
 Event types (v1): `integration.created|updated|activated|deactivated|activation_failed`,
 `instance.failed|succeeded` (succeeded off by default), `instance.resubmitted`,
@@ -285,7 +285,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 | **1** ✅ | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
 | **2** ✅ | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
 | **3** ✅ | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
-| **4** | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
+| **4** ✅ | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
 | **5** | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
 | **6** | Operations | errors list, resubmit/discard (single + bulk), business identifiers, dashboard, AI "explain this failure" | S11, S20, S23, S24 | — | resubmit, discard, dashboard, explain |
 | **7** | Adapters | adapter SDK docs, SFTP, Postgres, MySQL, SOAP, email; build from an OpenAPI/WSDL the user provides | S07, S15 | — | adapters |
@@ -370,3 +370,36 @@ Then: should-haves and could-haves by area, then the fixes
 - **AI proposals** can be shown on the canvas with new and changed steps highlighted.
 - **Not yet**: drag and drop (moves are up/down buttons), copy/paste, collapsing containers,
   editing variables and business identifiers outside the JSON view.
+
+**Phase 4 (done).** Every update:
+
+- **Outbox.** `events` (bigint identity id = cursor). `recordEvent` writes the event, fans out one
+  `deliveries` row per matching enabled channel (type patterns `*`, `instance.*`, exact; minimum
+  severity), then `pg_notify('oicr_events')`. Emitted by integrations (created, updated,
+  activated, deactivated), runs (succeeded, failed), schedules (skipped), connection tests, and
+  the AI builder (question, change proposed/accepted/rejected). Emitting never fails the action.
+- **Live UI.** One `LISTEN` per web process (`lib/live.ts`) fans events to browsers of the same org
+  over SSE (`/api/events/stream`). The client refreshes the page when the event concerns it and
+  toasts failures and AI questions. **Activity** is the feed.
+- **Channels** (`packages/notify`): Slack incoming webhook, Telegram bot, email (Resend), signed
+  webhook. Config is encrypted like connection secrets. The worker claims due deliveries with
+  `SKIP LOCKED` on every notify and every 2 s; 5xx/429/408 retry at 1 m, 5 m, 30 m, 2 h (5 attempts),
+  other 4xx fail at once. Webhooks carry `X-Webhook-Signature-V2` = hex HMAC-SHA256 of
+  `"{timestamp}.{body}"` with `X-Webhook-Timestamp`, which Hermes's webhook adapter verifies
+  (Generic V2), and a body with `text`, `url`, `event_type`, `severity`, `data`. Channels use the
+  same SSRF guard as the REST adapter.
+- **API keys** `oicr_<8 hex>_<secret>`, sha256 stored, shown once. A key acts as a developer of
+  the org narrowed to its scopes (`read` always; `operate`, `build`); keys can never do admin
+  things. `assertCan` checks both role and scopes.
+- **Public API** `/api/v1`: events (cursor), projects, integrations, runs, activate, deactivate,
+  run. **MCP server** at `/mcp` (stateless streamable HTTP, JSON responses, `@modelcontextprotocol/sdk`
+  web-standard transport) mounted in the web app instead of a separate `apps/mcp`. Read tools are
+  `readOnlyHint`; operate and build tools are only listed when the key has the scope. Both call the
+  same `lib/ops.ts`. The AI build tools run a non-streaming turn and return the reply, question or
+  proposals.
+- **Hermes** (`Settings → Hermes Agent`, `docs/hermes.md`): key → MCP config → webhook route with
+  `deliver_only` (every update, no tokens) → optional agent route on `instance.failed` that
+  diagnoses over MCP → a polling script for hosts without a public address.
+- **Not yet**: `/api/v1` CRUD for channels and keys (UI only), `usage.threshold` and resubmit
+  events (phases 6 and 8), per-user notification preferences, Slack/Telegram replies back into
+  the AI builder (Hermes covers this today).
