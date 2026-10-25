@@ -25,8 +25,9 @@ every step by hand.
 | 1 | Vertical slice: REST connections, engine, worker, schedules, HTTP triggers, runs with every step | done |
 | 2 | AI builder: describe it in English, answer questions, review the diff, accept | done |
 | 3 | Visual canvas: build and edit on a diagram, run replay, AI changes on the canvas | done |
-| 4 | Every update: events, Slack/Telegram, MCP server, Hermes | next |
-| 5–9 | Mapper, operations, adapters, AI hardening, product | |
+| 4 | Every update: live activity, Slack/Telegram/email/webhook, API keys, public API, MCP server, Hermes | done |
+| 5 | Mapper and lookups | next |
+| 6–9 | Operations, adapters, AI hardening, product | |
 
 Details per phase: [replica/architecture.md](replica/architecture.md#build-order-one-phase-at-a-time).
 
@@ -54,6 +55,28 @@ orders from the orders API to the shop and email me if one fails"). The AI build
 needs, drafts missing connections (you add the credentials), and shows the integration with a
 step-by-step diff. Nothing is created until you press **Create integration**. On any integration,
 **Edit with AI** changes it by instruction the same way. Needs `ANTHROPIC_API_KEY`.
+
+### Every update
+
+Everything that happens (runs, activations, AI proposals and questions, connection tests) is an
+event. You see it:
+
+- **Live in the app**: **Activity**, toasts for failures, pages that refresh themselves.
+- **In Slack, Telegram, email or any webhook**: **Settings → Notifications**. Pick "every update",
+  "only what needs attention", "every run" or "only failed runs". Failed sends are retried
+  (1 min, 5 min, 30 min, 2 h).
+- **Through Hermes Agent**: **Settings → Hermes Agent** walks you through it. Hermes gets every
+  update pushed to your chat over a signed webhook, and tools over MCP so you can ask "what failed
+  today and why?" or "run the orders sync" from your phone. See [docs/hermes.md](docs/hermes.md).
+- **From scripts**: create a key in **Settings → API keys** and call `/api/v1` (below) or the MCP
+  server at `/mcp`.
+
+| API (Bearer key) | |
+| --- | --- |
+| `GET /api/v1/events?since_id=N&types=…` | updates after a cursor, oldest first; returns `next_since_id` |
+| `GET /api/v1/projects`, `/integrations`, `/integrations/:id` | what exists |
+| `GET /api/v1/runs?status=failed`, `/runs/:id` | runs, with step activity |
+| `POST /api/v1/integrations/:id/activate`, `/deactivate`, `/runs` | needs the **operate** scope |
 
 ### For development
 
@@ -83,13 +106,14 @@ pnpm --filter @oicr/ai eval    # AI builder quality against real Claude (needs A
 ## Layout
 
 ```
-apps/web               Next.js 16 app: UI, auth, trigger endpoint (/t/...), later the AI chat
-apps/worker            runs queued integrations, fires schedules, reaps crashed runs
+apps/web               Next.js 16 app: UI, auth, AI chat, trigger endpoint (/t/...), API (/api/v1), MCP (/mcp)
+apps/worker            runs queued integrations, fires schedules, delivers notifications, reaps crashed runs
 packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema for the AI
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
 packages/adapters      adapter interface + REST adapter, with SSRF protection
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
 packages/ai            the AI builder: Claude tool-use loop, tools, system prompt, evals
+packages/notify        sends updates to Slack, Telegram, email and signed webhooks, with retries
 packages/db            Drizzle schema, migrations, org-scoped data access, secret encryption
 packages/auth          Better Auth config: email/Google sign-in, workspaces, roles
 replica/               recon, feature matrix, architecture, target schema

@@ -4,6 +4,7 @@ import {
   appendAiMessage,
   claimAiSession,
   type Db,
+  emitEvent,
   getAiSession,
   getIntegration,
   type PendingQuestion,
@@ -185,6 +186,15 @@ export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "
 
       if (pending) {
         pending.otherResults = results;
+        await emitEvent(db, {
+          orgId: actor.orgId,
+          type: "ai.question",
+          subjectType: "ai_session",
+          subjectId: sessionId,
+          summary: `The AI builder is waiting for your answer: ${pending.question}`,
+          path: `/ai/${sessionId}`,
+          data: { choices: pending.choices },
+        });
         return await finish("waiting", { pending });
       }
       history.push({ role: "user", content: results } as MessageParam);

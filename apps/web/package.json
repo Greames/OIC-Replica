@@ -12,12 +12,14 @@
     "test": "vitest run --dir src"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@oicr/adapters": "workspace:*",
     "@oicr/ai": "workspace:*",
     "@oicr/auth": "workspace:*",
     "@oicr/db": "workspace:*",
     "@oicr/engine": "workspace:*",
     "@oicr/flow-schema": "workspace:*",
+    "@oicr/notify": "workspace:*",
     "@oicr/runtime": "workspace:*",
     "@xyflow/react": "^12.12.0",
     "better-auth": "^1.7.12",

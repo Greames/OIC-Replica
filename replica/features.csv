@@ -68,10 +68,10 @@ Instances list with filters and business id search,observability,must,yes,yes,S2
 Instance detail with activity stream and payloads,observability,must,yes,yes,S22
 Errors list with resubmit and discard (single and bulk),observability,must,yes,no,S23
 Per-integration stats,observability,could,yes,no,S24
-Error notification emails,observability,should,yes,no,
+Error notification emails,observability,should,yes,yes,any channel; failures-only preset
 Export and import projects between environments,lifecycle,should,yes,no,S25 own archive format
 Trust certificate upload,settings,could,yes,no,S26
-Public REST API for integrations connections lookups monitoring,platform,should,yes,no,
+Public REST API for integrations connections lookups monitoring,platform,should,yes,partial,/api/v1: events integrations runs activate run
 On-premises connectivity agent,agents,could,yes,no,S19 defer
 Git-backed versioning of integration definitions,design,could,no,no,clone-only differentiator idea
 AI assistant for building and checking integrations,design,could,yes,no,own model calls; not Oracle's rules
@@ -85,3 +85,7 @@ HL7 / FHIR healthcare,other,could,yes,skip,out of this slice
 Visual Builder and Insight,other,could,yes,skip,separate products
 Import of real OIC .iar archives / XSLT compatibility,lifecycle,could,yes,skip,proprietary format
 OCI IAM / Vault / private endpoints,platform,could,yes,skip,Oracle infrastructure; use your own
+Live activity feed and toasts for every update,platform,must,no,yes,clone-only; SSE from the events outbox
+Updates to Slack Telegram email and signed webhooks,platform,must,no,yes,clone-only; filters retries
+MCP server for agents (Hermes Agent Claude),platform,must,no,yes,clone-only; scoped API keys
+Hermes Agent setup: push every update and ask about integrations from chat,platform,must,no,yes,clone-only

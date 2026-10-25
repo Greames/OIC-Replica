@@ -1,6 +1,6 @@
 import { memberships, users } from "@oicr/db";
 import { asc, eq } from "drizzle-orm";
-import { Badge, Card, PageHeader } from "@/components/ui/card";
+import { Badge, Card } from "@/components/ui/card";
 import { db } from "@/lib/db";
 import { requireViewer } from "@/lib/session";
 
@@ -24,7 +24,6 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <PageHeader title="Settings" description={viewer.orgName} />
       <h2 className="mb-3 font-medium">Members</h2>
       <Card className="divide-y divide-border">
         {members.map((m) => (

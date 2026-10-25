@@ -3,6 +3,7 @@ import type { Db } from "../client.js";
 import { nextRunAfter } from "../schedule.js";
 import { type InstanceStatus, instanceSteps, instances, integrations, schedules } from "../schema/runtime.js";
 import { type Actor, assertCan, NotFoundError } from "./access.js";
+import { emitEvent } from "./events.js";
 
 export type Instance = typeof instances.$inferSelect;
 export type InstanceStep = typeof instanceSteps.$inferSelect;
@@ -178,7 +179,33 @@ export async function finishInstance(
     })
     .where(eq(instances.id, id))
     .returning();
-  return row!;
+  const run = row!;
+  const [integ] = await db
+    .select({ name: integrations.name })
+    .from(integrations)
+    .where(eq(integrations.id, run.integrationId));
+  const name = integ?.name ?? "An integration";
+  const bid = run.primaryBusinessId ? ` (${run.primaryBusinessId})` : "";
+  await emitEvent(db, {
+    orgId: run.orgId,
+    type: run.status === "succeeded" ? "instance.succeeded" : "instance.failed",
+    severity: run.status === "succeeded" ? "info" : "error",
+    subjectType: "instance",
+    subjectId: run.id,
+    summary:
+      run.status === "succeeded"
+        ? `"${name}" ran successfully${bid} in ${run.durationMs ?? 0} ms.`
+        : `"${name}" failed${bid}: ${run.errorMessage ?? run.errorCode ?? "unknown error"}`,
+    path: `/observability/runs/${run.id}`,
+    data: {
+      integrationId: run.integrationId,
+      trigger: run.triggerKind,
+      errorCode: run.errorCode,
+      businessId: run.primaryBusinessId,
+      durationMs: run.durationMs,
+    },
+  });
+  return run;
 }
 
 /** Runs left "running" by a crashed worker: mark them failed so they can be resubmitted. */

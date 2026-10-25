@@ -10,6 +10,7 @@ import { integrations, schedules } from "../schema/runtime.js";
 import { decryptSecret, encryptSecret } from "../secrets.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { connectionIndex } from "./connections.js";
+import { emitEvent } from "./events.js";
 import { toIdentifier } from "./projects.js";
 
 export type Integration = typeof integrations.$inferSelect;
@@ -112,6 +113,15 @@ export async function createIntegration(db: Db, actor: Actor, input: NewIntegrat
     .onConflictDoNothing({ target: [integrations.orgId, integrations.identifier, integrations.version] })
     .returning();
   if (!row) throw new ConflictError(`An integration with the identifier ${identifier} already exists.`);
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: "integration.created",
+    subjectType: "integration",
+    subjectId: row.id,
+    summary: `Integration "${row.name}" was created.`,
+    path: `/integrations/${row.id}`,
+    data: { identifier: row.identifier, style: row.style, by: actor.userId },
+  });
   return row;
 }
 
@@ -148,6 +158,15 @@ export async function saveDefinition(db: Db, actor: Actor, id: string, definitio
     })
     .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)))
     .returning();
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: "integration.updated",
+    subjectType: "integration",
+    subjectId: id,
+    summary: `"${current.name}" was saved${checked.errors.length ? ` with ${checked.errors.length} problem(s)` : ""}.`,
+    path: `/integrations/${id}`,
+    data: { problems: checked.errors.length },
+  });
   return { integration: row!, errors: checked.errors, warnings: checked.warnings };
 }
 
@@ -214,6 +233,15 @@ export async function activateIntegration(
       .set({ status: "active", nextRunAt: nextRunAfter(current.schedule, new Date()) })
       .where(eq(schedules.id, current.schedule.id));
   }
+  await emitEvent(db, {
+    orgId: actor.orgId,
+    type: "integration.activated",
+    subjectType: "integration",
+    subjectId: id,
+    summary: `"${current.name}" is now active.`,
+    path: `/integrations/${id}`,
+    data: { tracingLevel: row!.tracingLevel },
+  });
   return row!;
 }
 

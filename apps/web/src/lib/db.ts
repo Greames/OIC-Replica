@@ -13,6 +13,7 @@ export const db: Db = new Proxy({} as Db, {
   get(_target, prop) {
     const real = instance();
     const value = Reflect.get(real, prop, real);
-    return typeof value === "function" ? value.bind(real) : value;
+    // $client (postgres.js) is a callable with methods like listen(); binding would drop them.
+    return typeof value === "function" && prop !== "$client" ? value.bind(real) : value;
   },
 });

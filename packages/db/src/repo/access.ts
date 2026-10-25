@@ -5,6 +5,8 @@ export interface Actor {
   userId: string;
   orgId: string;
   role: Role;
+  /** API keys only: the actions the key may take, on top of the role. */
+  scopes?: readonly Action[];
 }
 
 export type Action = "read" | "build" | "operate" | "admin";
@@ -42,5 +44,5 @@ export class ConflictError extends Error {
 }
 
 export function assertCan(actor: Actor, action: Action): void {
-  if (!can(actor.role, action)) throw new ForbiddenError(action);
+  if (!can(actor.role, action) || (actor.scopes && !actor.scopes.includes(action))) throw new ForbiddenError(action);
 }

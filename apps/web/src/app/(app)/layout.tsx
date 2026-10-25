@@ -1,6 +1,7 @@
 import { Workflow } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { LiveUpdates } from "@/components/live-updates";
 import { Nav } from "@/components/nav";
 import { SignOutButton } from "@/components/sign-out";
 import { requireViewer } from "@/lib/session";
@@ -37,6 +38,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <main className="min-w-0 flex-1 px-4 py-8 md:px-10">
         <div className="mx-auto max-w-5xl">{children}</div>
       </main>
+      <LiveUpdates />
     </div>
   );
 }
