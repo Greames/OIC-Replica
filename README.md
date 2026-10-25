@@ -23,8 +23,8 @@ every step by hand.
 | --- | --- | --- |
 | 0 | Foundation: monorepo, auth + workspaces, projects, flow format, CI, Docker | done |
 | 1 | Vertical slice: REST connections, engine, worker, schedules, HTTP triggers, runs with every step | done |
-| 2 | AI builder | next |
-| 3 | Visual canvas | |
+| 2 | AI builder: describe it in English, answer questions, review the diff, accept | done |
+| 3 | Visual canvas | next |
 | 4 | Every update: events, Slack/Telegram, MCP server, Hermes | |
 | 5–9 | Mapper, operations, adapters, AI hardening, product | |
 
@@ -49,6 +49,12 @@ Open http://localhost:3000, create an account and a workspace. Then:
    definition, **Save**, set a schedule if needed, **Activate**.
 3. **Run now** (or call the trigger URL with its token) and open the run to see every step.
 
+Or skip step 2: on **Home**, describe the integration in plain English ("every 15 minutes, send new
+orders from the orders API to the shop and email me if one fails"). The AI builder asks what it
+needs, drafts missing connections (you add the credentials), and shows the integration with a
+step-by-step diff. Nothing is created until you press **Create integration**. On any integration,
+**Edit with AI** changes it by instruction the same way. Needs `ANTHROPIC_API_KEY`.
+
 ### For development
 
 Needs Node 22 and pnpm 10 (`corepack enable`).
@@ -68,7 +74,10 @@ pnpm dev                                   # web on :3000 + worker
 pnpm lint          # Biome
 pnpm typecheck
 pnpm test          # unit tests; DB tests need TEST_DATABASE_URL
-pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker
+pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker;
+                               # the AI builder runs on recorded turns (no API key needed)
+pnpm --filter @oicr/ai eval    # AI builder quality against real Claude (needs ANTHROPIC_API_KEY;
+                               # uses real tokens)
 ```
 
 ## Layout
@@ -80,6 +89,7 @@ packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema f
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
 packages/adapters      adapter interface + REST adapter, with SSRF protection
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
+packages/ai            the AI builder: Claude tool-use loop, tools, system prompt, evals
 packages/db            Drizzle schema, migrations, org-scoped data access, secret encryption
 packages/auth          Better Auth config: email/Google sign-in, workspaces, roles
 replica/               recon, feature matrix, architecture, target schema

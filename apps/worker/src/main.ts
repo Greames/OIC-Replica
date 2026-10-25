@@ -1,4 +1,4 @@
-import { claimDueSchedules, createDb, failStaleInstances } from "@oicr/db";
+import { claimDueSchedules, createDb, failStaleInstances, recoverStuckAiSessions } from "@oicr/db";
 import { executeInstance, getQueue, RUN_QUEUE, type RunJob, startRun, stopQueue } from "@oicr/runtime";
 
 // The worker: runs queued instances, fires schedules, and reaps runs whose
@@ -36,6 +36,9 @@ async function reap(): Promise<void> {
   try {
     const n = await failStaleInstances(db, staleAfterMs);
     if (n > 0) log("marked stale runs failed", { count: n });
+    // An AI turn lasts minutes at most; one still "running" after 15 lost its server.
+    const ai = await recoverStuckAiSessions(db, 15 * 60_000);
+    if (ai > 0) log("released interrupted AI conversations", { count: ai });
   } catch (e) {
     log("reaper error", { error: (e as Error).message });
   }

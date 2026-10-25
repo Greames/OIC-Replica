@@ -3,9 +3,11 @@ import type { Issue } from "@oicr/flow-schema";
 import { eq } from "drizzle-orm";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { EditWithAi } from "@/components/build-with-ai";
 import { RunsTable } from "@/components/runs-table";
 import { StatusBadge } from "@/components/status-badge";
 import { Card, PageHeader } from "@/components/ui/card";
+import { aiEnabled } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
@@ -15,8 +17,15 @@ import { Lifecycle } from "./lifecycle";
 import { ScheduleForm } from "./schedule-form";
 import { TriggerPanel } from "./trigger-panel";
 
-export default async function IntegrationPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function IntegrationPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ fromAi?: string }>;
+}) {
   const { id } = await params;
+  const { fromAi } = await searchParams;
   if (!UUID.test(id)) notFound();
   const viewer = await requireViewer();
   const integration = await getIntegration(db, viewer, id).catch((e) => {
@@ -44,8 +53,18 @@ export default async function IntegrationPage({ params }: { params: Promise<{ id
       <PageHeader
         title={integration.name}
         description={`${integration.identifier} · ${integration.version} · ${integration.style === "scheduled" ? "runs on a schedule" : "runs when called"}`}
-        actions={<StatusBadge status={integration.status} />}
+        actions={
+          <div className="flex items-center gap-2">
+            {canBuild && aiEnabled() && <EditWithAi integrationId={id} />}
+            <StatusBadge status={integration.status} />
+          </div>
+        }
       />
+      {fromAi && (
+        <p role="status" className="-mt-2 mb-6 rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm">
+          Built by the AI builder. Check the connections it uses have credentials and pass their test, then activate.
+        </p>
+      )}
       <p className="-mt-4 mb-6 text-sm text-fg-muted">
         In{" "}
         <Link href={`/projects/${integration.projectId}`} className="text-accent hover:underline">

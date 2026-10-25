@@ -14,6 +14,7 @@ COPY packages/auth/package.json packages/auth/
 COPY packages/adapters/package.json packages/adapters/
 COPY packages/engine/package.json packages/engine/
 COPY packages/runtime/package.json packages/runtime/
+COPY packages/ai/package.json packages/ai/
 COPY apps/worker/package.json apps/worker/
 
 FROM manifests AS build
@@ -31,6 +32,7 @@ COPY --from=build /app/packages/auth/dist packages/auth/dist
 COPY --from=build /app/packages/adapters/dist packages/adapters/dist
 COPY --from=build /app/packages/engine/dist packages/engine/dist
 COPY --from=build /app/packages/runtime/dist packages/runtime/dist
+COPY --from=build /app/packages/ai/dist packages/ai/dist
 COPY --from=build /app/apps/worker/dist apps/worker/dist
 COPY --from=build /app/apps/web/.next apps/web/.next
 COPY --from=build /app/apps/web/next.config.ts apps/web/

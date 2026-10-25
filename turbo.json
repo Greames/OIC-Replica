@@ -40,6 +40,9 @@
     "STALE_RUN_MINUTES",
     "SYNC_TIMEOUT_SECONDS",
     "MOCK_API_PORT",
-    "PORT"
+    "PORT",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "AI_*"
   ]
 }

@@ -1,13 +1,21 @@
-import { listProjects } from "@oicr/db";
-import { ArrowRight, FolderKanban, Sparkles } from "lucide-react";
+import { can, listAiSessions, listProjects } from "@oicr/db";
+import { ArrowRight, FolderKanban, MessageSquare, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { Badge, Card, PageHeader } from "@/components/ui/card";
+import { BuildWithAi } from "@/components/build-with-ai";
+import { Card, PageHeader } from "@/components/ui/card";
+import { aiEnabled } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { requireViewer } from "@/lib/session";
 
 export default async function HomePage() {
   const viewer = await requireViewer();
-  const projects = (await listProjects(db, viewer)).slice(0, 5);
+  const [allProjects, sessions] = await Promise.all([
+    listProjects(db, viewer),
+    listAiSessions(db, viewer, { limit: 5 }),
+  ]);
+  const projects = allProjects.slice(0, 5);
+  const enabled = aiEnabled();
+  const canBuild = can(viewer.role, "build");
 
   return (
     <>
@@ -16,27 +24,50 @@ export default async function HomePage() {
         description="Describe an integration, review what the AI builds, and turn it on."
       />
 
-      <Card className="relative overflow-hidden p-6">
-        <div className="flex items-start gap-4">
-          <div className="rounded-lg bg-accent/10 p-2 text-accent">
-            <Sparkles className="size-5" aria-hidden />
-          </div>
-          <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="font-medium">Build with AI</h2>
-              <Badge>Phase 2</Badge>
+      {canBuild && (
+        <Card className="p-6">
+          <div className="flex items-start gap-4">
+            <div className="rounded-lg bg-accent/10 p-2 text-accent">
+              <Sparkles className="size-5" aria-hidden />
             </div>
-            <p className="mt-1 text-sm text-fg-muted">
-              “Every 15 minutes, send new orders from our Postgres to the shop API, and email me if one fails.”
-            </p>
-            <textarea
-              disabled
-              placeholder="Describe the integration you want…"
-              className="mt-4 min-h-20 w-full resize-none rounded-lg border border-border bg-muted px-3 py-2 text-sm"
-            />
+            <div className="min-w-0 flex-1">
+              <h2 className="font-medium">Build with AI</h2>
+              <p className="mt-1 mb-4 text-sm text-fg-muted">
+                Say what should happen, in your own words. The AI asks what it needs, drafts the integration, and you
+                review it before anything is created.
+              </p>
+              {allProjects.length === 0 ? (
+                <p className="text-sm">
+                  <Link href="/projects" className="font-medium text-accent hover:underline">
+                    Create a project
+                  </Link>{" "}
+                  first; integrations live in one.
+                </p>
+              ) : (
+                <BuildWithAi projects={allProjects.map((p) => ({ id: p.id, name: p.name }))} enabled={enabled} />
+              )}
+              {!enabled && (
+                <p className="mt-3 text-sm text-fg-muted">The AI builder needs ANTHROPIC_API_KEY on the server.</p>
+              )}
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      )}
+
+      {sessions.length > 0 && (
+        <>
+          <h2 className="mt-8 mb-3 font-medium">Recent AI conversations</h2>
+          <Card className="divide-y divide-border">
+            {sessions.map((s) => (
+              <Link key={s.id} href={`/ai/${s.id}`} className="flex items-center gap-3 px-5 py-3 hover:bg-muted">
+                <MessageSquare className="size-4 shrink-0 text-fg-muted" aria-hidden />
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                {s.status === "waiting" && <span className="text-xs text-accent">waiting for you</span>}
+              </Link>
+            ))}
+          </Card>
+        </>
+      )}
 
       <div className="mt-8 flex items-center justify-between">
         <h2 className="font-medium">Recent projects</h2>

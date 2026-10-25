@@ -1,6 +1,7 @@
 export * from "./client.js";
 export * from "./payload.js";
 export * from "./repo/access.js";
+export * from "./repo/ai.js";
 export * from "./repo/connections.js";
 export * from "./repo/instances.js";
 export * from "./repo/integrations.js";

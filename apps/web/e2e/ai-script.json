@@ -1,0 +1,201 @@
+[
+  [
+    {
+      "type": "text",
+      "text": "Let me check what you have connected."
+    },
+    {
+      "type": "tool_use",
+      "id": "s1",
+      "name": "list_connections",
+      "input": {}
+    },
+    {
+      "type": "tool_use",
+      "id": "s2",
+      "name": "ask_user",
+      "input": {
+        "question": "How often should it run?",
+        "choices": ["Every 15 minutes", "Every hour"]
+      }
+    }
+  ],
+  [
+    {
+      "type": "tool_use",
+      "id": "s3",
+      "name": "propose_flow",
+      "input": {
+        "name": "Orders to shop",
+        "summary": "Every 15 minutes, reads new orders from Mock API and creates each one in the shop. A failed order is logged and the rest continue.",
+        "schedule": {
+          "kind": "interval",
+          "expression": "PT15M",
+          "timezone": "UTC"
+        },
+        "flow": {
+          "schemaVersion": 1,
+          "style": "scheduled",
+          "trigger": {
+            "id": "trigger",
+            "type": "schedule"
+          },
+          "steps": [
+            {
+              "id": "fetch",
+              "type": "invoke",
+              "label": "Read new orders",
+              "connection": "mock_api",
+              "operation": "GET /orders"
+            },
+            {
+              "id": "each",
+              "type": "forEach",
+              "label": "For each order",
+              "over": "$fetch.body.orders",
+              "as": "order",
+              "steps": [
+                {
+                  "id": "guard",
+                  "type": "scope",
+                  "label": "Send safely",
+                  "steps": [
+                    {
+                      "id": "shape",
+                      "type": "map",
+                      "label": "Map to shop format",
+                      "expression": "{ \"external_id\": $order.id, \"total_cents\": $order.total * 100 }"
+                    },
+                    {
+                      "id": "send",
+                      "type": "invoke",
+                      "label": "Create shop order",
+                      "connection": "mock_api",
+                      "operation": "POST /shop/orders",
+                      "request": "{ \"body\": $shape }"
+                    }
+                  ],
+                  "onFault": [
+                    {
+                      "id": "note",
+                      "type": "log",
+                      "label": "Log failure",
+                      "level": "warn",
+                      "message": "Order {{$order.id}} failed: {{$fault.code}}"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "businessIds": [
+            {
+              "name": "first_order",
+              "expr": "$fetch.body.orders[0].id",
+              "primary": true
+            }
+          ]
+        }
+      }
+    }
+  ],
+  [
+    {
+      "type": "text",
+      "text": "Here it is. Mock API is already connected and tested, so you can create it and activate it straight away."
+    }
+  ],
+  [
+    {
+      "type": "tool_use",
+      "id": "s4",
+      "name": "get_flow",
+      "input": {}
+    }
+  ],
+  [
+    {
+      "type": "tool_use",
+      "id": "s5",
+      "name": "propose_flow",
+      "input": {
+        "name": "Orders to shop",
+        "summary": "Creating a shop order now retries up to 3 times on temporary errors.",
+        "schedule": null,
+        "flow": {
+          "schemaVersion": 1,
+          "style": "scheduled",
+          "trigger": {
+            "id": "trigger",
+            "type": "schedule"
+          },
+          "steps": [
+            {
+              "id": "fetch",
+              "type": "invoke",
+              "label": "Read new orders",
+              "connection": "mock_api",
+              "operation": "GET /orders"
+            },
+            {
+              "id": "each",
+              "type": "forEach",
+              "label": "For each order",
+              "over": "$fetch.body.orders",
+              "as": "order",
+              "steps": [
+                {
+                  "id": "guard",
+                  "type": "scope",
+                  "label": "Send safely",
+                  "steps": [
+                    {
+                      "id": "shape",
+                      "type": "map",
+                      "label": "Map to shop format",
+                      "expression": "{ \"external_id\": $order.id, \"total_cents\": $order.total * 100 }"
+                    },
+                    {
+                      "id": "send",
+                      "type": "invoke",
+                      "label": "Create shop order",
+                      "connection": "mock_api",
+                      "operation": "POST /shop/orders",
+                      "request": "{ \"body\": $shape }",
+                      "retry": {
+                        "attempts": 3,
+                        "backoffSeconds": 1
+                      }
+                    }
+                  ],
+                  "onFault": [
+                    {
+                      "id": "note",
+                      "type": "log",
+                      "label": "Log failure",
+                      "level": "warn",
+                      "message": "Order {{$order.id}} failed: {{$fault.code}}"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "businessIds": [
+            {
+              "name": "first_order",
+              "expr": "$fetch.body.orders[0].id",
+              "primary": true
+            }
+          ]
+        }
+      }
+    }
+  ],
+  [
+    {
+      "type": "text",
+      "text": "Done: the send step retries 3 times on timeouts and server errors."
+    }
+  ]
+]

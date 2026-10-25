@@ -1,3 +1,4 @@
+export * from "./diff.js";
 export { emptyFlow } from "./empty.js";
 export * from "./expressions.js";
 export * from "./hash.js";

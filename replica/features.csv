@@ -1,18 +1,18 @@
 feature,area,priority,original,clone,notes
-AI chat panel: describe an integration in plain English and get a draft flow,ai,must,no,no,the core differentiator; S28
-AI asks clarifying questions when the request is ambiguous (systems fields schedule errors),ai,must,no,no,
-AI picks existing connections or drafts new ones (no secrets in chat),ai,must,no,no,user enters credentials in S16
-AI generates the mapping from sample payloads or schemas,ai,must,no,no,user reviews in S08
-AI edits an existing flow by instruction (add retry / add a filter / send email on failure),ai,must,no,no,
-Preview and diff of AI changes before they apply,ai,must,no,no,nothing lands on the canvas unapproved
-AI output validated against the flow schema and canvas rules before showing,ai,must,no,no,
-Human approval required to activate; AI never activates or deploys alone,ai,must,no,no,
+AI chat panel: describe an integration in plain English and get a draft flow,ai,must,no,yes,the core differentiator; S28
+AI asks clarifying questions when the request is ambiguous (systems fields schedule errors),ai,must,no,yes,
+AI picks existing connections or drafts new ones (no secrets in chat),ai,must,no,yes,user enters credentials in S16
+AI generates the mapping from sample payloads or schemas,ai,must,no,partial,user reviews in S08
+AI edits an existing flow by instruction (add retry / add a filter / send email on failure),ai,must,no,yes,
+Preview and diff of AI changes before they apply,ai,must,no,yes,nothing lands on the canvas unapproved
+AI output validated against the flow schema and canvas rules before showing,ai,must,no,yes,
+Human approval required to activate; AI never activates or deploys alone,ai,must,no,yes,
 AI generates test payloads and runs a dry run,ai,should,no,no,
 AI explains a failed instance and proposes a fix,ai,should,no,no,from S22 / S23
 Build from an OpenAPI / WSDL URL or file the user provides,ai,should,no,no,
 AI best-practice review of a flow,ai,could,partial,no,OIC 26.07 added AI best-practice checks
 Ask observability questions in English (failures for order 10045 yesterday),ai,could,no,no,
-Prompt and model audit log per change,ai,should,no,no,who asked what and what changed
+Prompt and model audit log per change,ai,should,no,yes,who asked what and what changed
 Sign in and multi-user tenant,platform,must,yes,yes,own auth instead of OCI IAM
 Roles: admin developer monitor viewer,platform,should,yes,partial,simplified from IAM groups
 Projects that bundle integrations connections lookups libraries,projects,must,yes,partial,S02 S03

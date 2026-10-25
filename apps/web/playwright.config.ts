@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
 
 const port = Number(process.env.PORT ?? 3000);
@@ -29,7 +30,17 @@ export default defineConfig({
           reuseExistingServer: true,
           env: env({ MOCK_API_PORT: String(mockPort) }),
         },
-        { command: `pnpm start -p ${port}`, port, reuseExistingServer: true, timeout: 60_000 },
+        {
+          command: `pnpm start -p ${port}`,
+          port,
+          reuseExistingServer: true,
+          timeout: 60_000,
+          // Offline AI: recorded assistant turns instead of Claude (see e2e/ai-script.json).
+          env: env({
+            AI_PROVIDER: "scripted",
+            AI_SCRIPT_FILE: fileURLToPath(new URL("./e2e/ai-script.json", import.meta.url)),
+          }),
+        },
         {
           command: "pnpm --filter @oicr/worker start",
           // No port: wait for its start-up log line.

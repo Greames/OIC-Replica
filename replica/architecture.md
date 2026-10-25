@@ -42,7 +42,7 @@ renames it before launch.
 | custom JS | isolated-vm | runs user JS libraries with memory/time limits and no network |
 | auth | Better Auth (email + Google, orgs plugin) | self-hostable, owns its tables in our Postgres, has organizations/roles built in |
 | secrets | AES-256-GCM envelope encryption, master key from env or a cloud KMS | credentials never leave the server; never sent to the model |
-| AI | Anthropic Claude via `@anthropic-ai/sdk`, tool use + streaming | strong at tool use and structured output. Default model `claude-sonnet-5-5` for the chat, `claude-opus-5-5` for hard builds/repairs, `claude-haiku-5-5` for summaries and event one-liners. Behind a small provider interface so others can be added |
+| AI | Anthropic Claude via `@anthropic-ai/sdk`, tool use + streaming | strong at tool use and structured output. Default model `claude-opus-5-5` (configurable with `AI_MODEL`, effort with `AI_EFFORT`); a cheaper model is the operator's choice, made after running the eval. Behind a small provider interface so others can be added |
 | agent protocol | MCP server (`@modelcontextprotocol/sdk`, streamable HTTP) | lets Hermes Agent, Claude Desktop, Claude Code or any MCP client drive the platform |
 | realtime | Server-Sent Events from Postgres LISTEN/NOTIFY | live run status and AI progress without a websocket service |
 | payload storage | S3-compatible (Cloudflare R2 / MinIO self-hosted) | payloads up to 1 GB never sit in Postgres |
@@ -283,7 +283,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 | --- | --- | --- | --- | --- | --- |
 | **0** ✅ | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
 | **1** ✅ | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
-| **2** | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
+| **2** ✅ | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
 | **3** | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
 | **4** | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
 | **5** | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
@@ -323,3 +323,32 @@ Then: should-haves and could-haves by area, then the fixes
 - **Editing**: active integrations are read-only (deactivate first, as in OIC). Saves carry the
   definition hash and are refused if it changed meanwhile. Invalid definitions save as drafts with
   their errors listed by path.
+
+**Phase 2 (done).** The AI builder:
+
+- **Loop** (`packages/ai/src/loop.ts`): a hand-written streaming tool-use loop, not the SDK tool
+  runner, because a conversation pauses across HTTP requests when the AI asks a question
+  (`ask_user`). The paused turn's other tool results are held with the question and sent together
+  with the answer, so every assistant tool call is answered in one message.
+- **Model call**: `claude-opus-5-5`, adaptive thinking (summaries streamed as "Thinking…"),
+  effort `high`, server-side refusal fallback (`fallbacks: "default"`), system prompt + tools cached,
+  top-level automatic caching for the conversation tail. Forced `tool_choice` is not used (the
+  model rejects it); the prompt steers instead. The system prompt is byte-identical for every
+  request; the project, integration and date go in the first user message.
+- **History is append-only**: messages are stored exactly as returned (including thinking blocks) and
+  never edited, which keeps thinking blocks valid and the cache warm.
+- **Tools**: list_adapters, list_connections, get_flow, infer_schema, test_expression, ask_user,
+  request_connection (draft, no secrets), propose_flow. Small tools are `strict`; propose_flow
+  streams its large input (`eager_input_streaming`) and is validated by the FlowDoc validator
+  instead, with errors returned to the model by JSON path; after 3 failed proposals in a turn it
+  is told to stop and explain. No tool can save, activate, delete or read credentials.
+- **Proposals** (`ai_changes`) carry a step-level diff (added / changed / moved / removed) and the
+  base hash; accepting refuses if the integration changed since (marked stale) or is active.
+  Accepting a new one creates the integration with its schedule; later messages in that
+  conversation edit it.
+- **Not yet**: accepting part of a proposal (all or nothing for now), dry runs with generated test
+  data (phase 8), AI explanations of failed runs (phase 6).
+- **Tests**: the loop, tools and accept path run against Postgres with a scripted model; the request
+  shape is checked against a local fake of the API; the browser e2e runs the whole flow on
+  recorded turns. `packages/ai/evals` holds 12 real requests graded by checks on the proposal.
+  They need an API key and have **not been run yet**.

@@ -1,0 +1,103 @@
+[
+  {
+    "id": "orders-poll",
+    "prompt": "Every 15 minutes, take new orders from the orders API and create them in the shop API.",
+    "connections": ["orders_api", "shop_api"],
+    "expect": {
+      "style": "scheduled",
+      "uses": ["orders_api", "shop_api"],
+      "stepTypes": ["invoke", "forEach"],
+      "schedule": true
+    }
+  },
+  {
+    "id": "orders-poll-with-alert",
+    "prompt": "Hourly, copy new orders from the orders API to the shop API. If one order fails, email ops@example.com and keep going with the rest.",
+    "connections": ["orders_api", "shop_api"],
+    "expect": {
+      "style": "scheduled",
+      "uses": ["orders_api", "shop_api"],
+      "stepTypes": ["forEach", "scope", "notify"],
+      "schedule": true
+    }
+  },
+  {
+    "id": "webhook-to-crm",
+    "prompt": "When our website posts a contact form (name, email, message), create the contact in the CRM and reply to the website with the new contact id.",
+    "connections": ["crm_api"],
+    "expect": { "style": "application", "uses": ["crm_api"], "stepTypes": ["invoke", "return"], "sync": true }
+  },
+  {
+    "id": "async-webhook",
+    "prompt": "Accept payment events from Stripe-like webhooks and forward each one to the ledger API. The sender should not wait.",
+    "connections": ["ledger_api"],
+    "expect": { "style": "application", "uses": ["ledger_api"], "stepTypes": ["invoke"], "sync": false }
+  },
+  {
+    "id": "routing",
+    "prompt": "When a ticket is posted to us, send it to the urgent queue API path /urgent if priority is 'high', otherwise to /normal. Answer with {\"queued\": true}.",
+    "connections": ["queue_api"],
+    "expect": { "style": "application", "uses": ["queue_api"], "stepTypes": ["switch", "return"], "sync": true }
+  },
+  {
+    "id": "missing-connection",
+    "prompt": "Every night at 2am Berlin time, read yesterday's invoices from the billing API and post them to our accounting system at https://accounting.example.com/api.",
+    "connections": ["billing_api"],
+    "answers": ["It uses a bearer token."],
+    "expect": {
+      "style": "scheduled",
+      "uses": ["billing_api"],
+      "newConnection": true,
+      "schedule": true,
+      "cronTimezone": "Europe/Berlin"
+    }
+  },
+  {
+    "id": "ambiguous",
+    "prompt": "Sync customers.",
+    "connections": ["crm_api", "shop_api"],
+    "answers": ["From the shop API to the CRM, every hour, all customers updated since the last run."],
+    "expect": { "asks": true, "style": "scheduled", "uses": ["crm_api", "shop_api"], "schedule": true }
+  },
+  {
+    "id": "transform",
+    "prompt": "Every 30 minutes read products from the shop API and send them to the search API, with price converted from cents to a decimal and names lowercased.",
+    "connections": ["shop_api", "search_api"],
+    "expect": {
+      "style": "scheduled",
+      "uses": ["shop_api", "search_api"],
+      "stepTypes": ["forEach"],
+      "schedule": true,
+      "expressionContains": ["100", "lowercase"]
+    }
+  },
+  {
+    "id": "retry",
+    "prompt": "Every 5 minutes push pending shipments from the orders API to the carrier API. The carrier API is flaky, so retry each push a few times.",
+    "connections": ["orders_api", "carrier_api"],
+    "expect": { "style": "scheduled", "uses": ["orders_api", "carrier_api"], "retry": true, "schedule": true }
+  },
+  {
+    "id": "pagination",
+    "prompt": "Daily, fetch all pages of users from the directory API (it returns {users, nextPage}; stop when nextPage is null) and send each user to the HR API.",
+    "connections": ["directory_api", "hr_api"],
+    "expect": {
+      "style": "scheduled",
+      "uses": ["directory_api", "hr_api"],
+      "stepTypes": ["while", "assign"],
+      "schedule": true
+    }
+  },
+  {
+    "id": "no-secrets",
+    "prompt": "Every hour send new leads from the forms API to the CRM. The CRM API key is sk_live_abc123, use it.",
+    "connections": ["forms_api"],
+    "expect": { "style": "scheduled", "uses": ["forms_api"], "noSecretInFlow": "sk_live_abc123", "schedule": true }
+  },
+  {
+    "id": "business-id",
+    "prompt": "Every 10 minutes copy new orders from the orders API to the ERP API. We need to find runs by order number.",
+    "connections": ["orders_api", "erp_api"],
+    "expect": { "style": "scheduled", "uses": ["orders_api", "erp_api"], "businessIds": true, "schedule": true }
+  }
+]
