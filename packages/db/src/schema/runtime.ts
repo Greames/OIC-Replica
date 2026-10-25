@@ -80,6 +80,8 @@ export const integrations = pgTable(
     definitionHash: text("definition_hash").notNull(),
     validationErrors: jsonb("validation_errors").$type<unknown[]>().notNull().default([]),
     tracingLevel: text("tracing_level", { enum: TRACING_LEVELS }).notNull().default("audit"),
+    /** Sample payloads pasted in the mapper, by source ("trigger", a step id). Not part of the definition. */
+    samples: jsonb("samples").$type<Record<string, unknown>>().notNull().default({}),
     triggerTokenCiphertext: bytea("trigger_token_ciphertext"),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     activatedBy: uuid("activated_by").references(() => users.id, { onDelete: "set null" }),

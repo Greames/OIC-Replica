@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { nextRunAfter, ScheduleInput } from "../schedule.js";
 import { orgs } from "../schema/auth.js";
 import { projects } from "../schema/core.js";
-import { integrations, schedules } from "../schema/runtime.js";
+import { lookups } from "../schema/lookups.js";
+import { instanceSteps, instances, integrations, schedules } from "../schema/runtime.js";
 import { decryptSecret, encryptSecret } from "../secrets.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { connectionIndex } from "./connections.js";
@@ -38,7 +39,11 @@ export class InvalidStateError extends Error {
 
 /** Validates against the org's real connections; empty flows stay drafts. */
 async function check(db: Db, orgId: string, definition: unknown) {
-  const result = validateFlow(definition, { connections: await connectionIndex(db, orgId) });
+  const [connections, lookupRows] = await Promise.all([
+    connectionIndex(db, orgId),
+    db.select({ name: lookups.name }).from(lookups).where(eq(lookups.orgId, orgId)),
+  ]);
+  const result = validateFlow(definition, { connections, lookups: lookupRows.map((l) => l.name) });
   const doc = result.doc ?? (definition as FlowDoc);
   const hasSteps = Array.isArray((definition as FlowDoc)?.steps) && (definition as FlowDoc).steps.length > 0;
   return {
@@ -292,4 +297,63 @@ export async function findActiveTrigger(db: Db, orgSlug: string, identifier: str
     ? decryptSecret<string>(row.integration.triggerTokenCiphertext)
     : null;
   return { integration: row.integration, token };
+}
+
+export interface Samples {
+  /** Pasted in the mapper, by source: "trigger" or a step id. */
+  pasted: Record<string, unknown>;
+  /** From recent runs: the trigger input and each step's first recorded output. */
+  run: { trigger?: unknown; steps: Record<string, unknown>; runId?: string };
+}
+
+/** Sample data for the mapper. Production tracing keeps no payloads, so runs may give none. */
+export async function getSamples(db: Db, actor: Actor, id: string): Promise<Samples> {
+  const integration = await getIntegration(db, actor, id);
+  const recent = await db
+    .select({ id: instances.id, input: instances.input })
+    .from(instances)
+    .where(and(eq(instances.orgId, actor.orgId), eq(instances.integrationId, id)))
+    .orderBy(desc(instances.createdAt))
+    .limit(5);
+  const run: Samples["run"] = { steps: {} };
+  const withInput = recent.find((r) => r.input !== null && r.input !== undefined);
+  if (withInput) {
+    run.trigger = withInput.input;
+    run.runId = withInput.id;
+  }
+  if (recent.length) {
+    const steps = await db
+      .select({ instanceId: instanceSteps.instanceId, stepId: instanceSteps.stepId, output: instanceSteps.output })
+      .from(instanceSteps)
+      .where(
+        and(
+          inArray(
+            instanceSteps.instanceId,
+            recent.map((r) => r.id),
+          ),
+          isNotNull(instanceSteps.output),
+        ),
+      )
+      .orderBy(instanceSteps.seq);
+    // Newest run first, then the first record of each step (first loop iteration).
+    for (const r of recent)
+      for (const s of steps) if (s.instanceId === r.id && !(s.stepId in run.steps)) run.steps[s.stepId] = s.output;
+  }
+  return { pasted: integration.samples ?? {}, run };
+}
+
+/** Saves (or with null, removes) a pasted sample. Does not change the definition. */
+export async function setSample(db: Db, actor: Actor, id: string, source: string, value: unknown): Promise<void> {
+  assertCan(actor, "build");
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(source)) throw new ConflictError("Not a valid source name.");
+  if (JSON.stringify(value ?? null).length > 256_000)
+    throw new ConflictError("That sample is too large (256 KB at most).");
+  const current = await getIntegration(db, actor, id);
+  const samples = { ...(current.samples ?? {}) };
+  if (value === null || value === undefined) delete samples[source];
+  else samples[source] = value;
+  await db
+    .update(integrations)
+    .set({ samples })
+    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
 }

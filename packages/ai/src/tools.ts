@@ -9,10 +9,21 @@ import {
   type Db,
   getIntegration,
   listConnections,
+  listLookups,
+  loadLookup,
+  lookupNames,
   ScheduleInput,
   toConnectionIdentifier,
 } from "@oicr/db";
-import { diffFlows, type FlowDoc, type Issue, isEmptyDiff, validateFlow } from "@oicr/flow-schema";
+import {
+  diffFlows,
+  type FlowDoc,
+  type Issue,
+  isEmptyDiff,
+  LOOKUP_FUNCTION,
+  lookupFunction,
+  validateFlow,
+} from "@oicr/flow-schema";
 import { and, desc, eq } from "drizzle-orm";
 import jsonata from "jsonata";
 import { z } from "zod";
@@ -67,6 +78,13 @@ export const TOOLS: Tool[] = [
     name: "list_connections",
     description:
       "List the workspace's connections: identifier (what a flow's invoke.connection must use), adapter, role, status (configured = tested and working, draft = credentials missing or untested) and base URL. Never shows credentials.",
+    strict: true,
+    input_schema: strictObject({}),
+  },
+  {
+    name: "list_lookups",
+    description:
+      'List the workspace\'s lookups (value maps between systems, e.g. country codes): name, domains (columns) and a few example rows. Use them in expressions as $lookupValue("name", "from domain", value, "to domain", default?).',
     strict: true,
     input_schema: strictObject({}),
   },
@@ -240,6 +258,20 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
       };
     }
 
+    case "list_lookups": {
+      const rows = await listLookups(db, actor);
+      const withExamples = await Promise.all(
+        rows.map(async (l) => ({
+          name: l.name,
+          description: l.description,
+          domains: l.domains,
+          rows: l.rowCount,
+          examples: ((await loadLookup(db, actor.orgId, l.name))?.rows ?? []).slice(0, 5),
+        })),
+      );
+      return { content: json(withExamples) };
+    }
+
     case "get_flow": {
       const integration = session.integrationId ? await getIntegration(db, actor, session.integrationId) : null;
       const [latest] = await db
@@ -285,7 +317,11 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
         return { content: `bindings_json is not valid JSON: ${(e as Error).message}`, isError: true };
       }
       try {
-        const result = await jsonata(expression).evaluate(bindings.trigger ?? {}, bindings);
+        const lookupValue = lookupFunction((name) => loadLookup(db, actor.orgId, name));
+        const result = await jsonata(expression).evaluate(bindings.trigger ?? {}, {
+          [LOOKUP_FUNCTION]: lookupValue,
+          ...bindings,
+        });
         return { content: json({ result: result === undefined ? null : JSON.parse(JSON.stringify(result)) }) };
       } catch (e) {
         return { content: `Expression error: ${(e as Error).message}`, isError: true };
@@ -349,7 +385,10 @@ async function proposeFlow(input: unknown, ctx: ToolContext): Promise<ToolOutcom
   const { name, summary, schedule, flow } = parsed.data;
   const integration = session.integrationId ? await getIntegration(db, actor, session.integrationId) : null;
 
-  const result = validateFlow(flow, { connections: await connectionIndex(db, actor.orgId) });
+  const result = validateFlow(flow, {
+    connections: await connectionIndex(db, actor.orgId),
+    lookups: await lookupNames(db, actor.orgId),
+  });
   const errors: Issue[] = [...result.errors];
   if (integration && (flow as { style?: string }).style !== integration.style) {
     errors.push({

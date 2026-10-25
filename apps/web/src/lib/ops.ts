@@ -17,7 +17,9 @@ import {
   listEvents,
   listInstances,
   listIntegrations,
+  listLookups,
   listProjects,
+  loadLookup,
   NotFoundError,
   rejectAiChange,
 } from "@oicr/db";
@@ -84,6 +86,21 @@ export async function opListEvents(actor: Actor, q: z.input<typeof EventsQuery>)
 
 export async function opListProjects(actor: Actor) {
   return (await listProjects(db, actor)).map((p) => ({ id: p.id, name: p.name, identifier: p.identifier }));
+}
+
+export async function opListLookups(actor: Actor, opts: { rows?: boolean } = {}) {
+  const rows = await listLookups(db, actor);
+  return Promise.all(
+    rows.map(async (l) => ({
+      id: l.id,
+      name: l.name,
+      description: l.description,
+      domains: l.domains,
+      row_count: l.rowCount,
+      ...(opts.rows ? { rows: (await loadLookup(db, actor.orgId, l.name))?.rows ?? [] } : {}),
+      url: link(`/lookups/${l.id}`),
+    })),
+  );
 }
 
 export async function opListIntegrations(actor: Actor, q: { project_id?: string } = {}) {

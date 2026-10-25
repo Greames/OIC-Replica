@@ -127,10 +127,10 @@ echo "$PAGE" | jq -r '.next_since_id' > ~/.oicr-cursor`;
         <Snippet label="Hermes MCP config" text={mcp} />
         <Snippet label="Hermes environment" text={env} />
         <p className="text-xs text-fg-muted">
-          Tools: list_projects, list_integrations, get_integration, list_runs, get_run, list_events (read);
-          activate_integration, deactivate_integration, run_integration (operate); start_ai_build, continue_ai_build,
-          accept_ai_change (build). Hermes&apos; <code>trust: untrusted</code> treats what the tools return as data, not
-          instructions.
+          Tools: list_projects, list_integrations, get_integration, list_runs, get_run, list_events, list_lookups
+          (read); activate_integration, deactivate_integration, run_integration (operate); start_ai_build,
+          continue_ai_build, accept_ai_change (build). Hermes&apos; <code>trust: untrusted</code> treats what the tools
+          return as data, not instructions.
         </p>
       </Step>
 

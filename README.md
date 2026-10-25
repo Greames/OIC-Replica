@@ -26,8 +26,9 @@ every step by hand.
 | 2 | AI builder: describe it in English, answer questions, review the diff, accept | done |
 | 3 | Visual canvas: build and edit on a diagram, run replay, AI changes on the canvas | done |
 | 4 | Every update: live activity, Slack/Telegram/email/webhook, API keys, public API, MCP server, Hermes | done |
-| 5 | Mapper and lookups | next |
-| 6–9 | Operations, adapters, AI hardening, product | |
+| 5 | Mapper and lookups: map fields visually, functions, test with samples, lookups from CSV | done |
+| 6 | Operations: errors, resubmit, dashboard, AI "explain this failure" | next |
+| 7–9 | Adapters, AI hardening, product | |
 
 Details per phase: [replica/architecture.md](replica/architecture.md#build-order-one-phase-at-a-time).
 
@@ -56,6 +57,25 @@ needs, drafts missing connections (you add the credentials), and shows the integ
 step-by-step diff. Nothing is created until you press **Create integration**. On any integration,
 **Edit with AI** changes it by instruction the same way. Needs `ANTHROPIC_API_KEY`.
 
+### Mapping data
+
+Open a **Map data** step (or **Map the request** on a call, **Map the response** on a reply) to get
+the mapper: what the step can read on the left (the trigger, earlier steps, loop items), the fields
+it produces in the middle, functions and a test on the right.
+
+- Click a source field to map it into the selected target field, or into a new one. Drag works too.
+- **List** maps a list item by item: pick the source list, then the item's fields (paths become
+  relative to the item).
+- Functions (text, numbers, dates, logic, lists, your lookups) wrap the selected field.
+- Sample data comes from the latest run, or paste one per source. **Run test** shows the result.
+- **Target from sample** sets the expected output; required fields that are not mapped are flagged.
+- **Code** shows the JSONata behind it; anything the field view cannot show stays editable as code.
+
+**Lookups** translate values between systems (country codes, status codes). Make one under
+**Lookups** (type it in or import a CSV, first line = domain names) and use it in any expression:
+`$lookupValue("countries", "shop", $order.country, "erp", "XX")`. Lookups used by an active
+integration cannot be deleted or renamed.
+
 ### Every update
 
 Everything that happens (runs, activations, AI proposals and questions, connection tests) is an
@@ -74,7 +94,7 @@ event. You see it:
 | API (Bearer key) | |
 | --- | --- |
 | `GET /api/v1/events?since_id=N&types=…` | updates after a cursor, oldest first; returns `next_since_id` |
-| `GET /api/v1/projects`, `/integrations`, `/integrations/:id` | what exists |
+| `GET /api/v1/projects`, `/integrations`, `/integrations/:id`, `/lookups` | what exists |
 | `GET /api/v1/runs?status=failed`, `/runs/:id` | runs, with step activity |
 | `POST /api/v1/integrations/:id/activate`, `/deactivate`, `/runs` | needs the **operate** scope |
 

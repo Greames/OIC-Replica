@@ -286,7 +286,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 | **2** ✅ | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
 | **3** ✅ | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
 | **4** ✅ | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
-| **5** | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
+| **5** ✅ | Mapper + lookups | two-tree mapper over JSONata, function palette, test pane, lookups with CSV, schema inference from samples, AI-generated maps shown here | S08, S09, S17 | lookups | lookups, mapping/test |
 | **6** | Operations | errors list, resubmit/discard (single + bulk), business identifiers, dashboard, AI "explain this failure" | S11, S20, S23, S24 | — | resubmit, discard, dashboard, explain |
 | **7** | Adapters | adapter SDK docs, SFTP, Postgres, MySQL, SOAP, email; build from an OpenAPI/WSDL the user provides | S07, S15 | — | adapters |
 | **8** | Hardening the AI | dry runs with mocked invokes, generated test data, eval suite to 50+ cases, Opus fallback on hard builds, prompt caching, per-org AI budgets | S13 | usage_hourly | dry-run |
@@ -403,3 +403,33 @@ Then: should-haves and could-haves by area, then the fixes
 - **Not yet**: `/api/v1` CRUD for channels and keys (UI only), `usage.threshold` and resubmit
   events (phases 6 and 8), per-user notification preferences, Slack/Telegram replies back into
   the AI builder (Hermes covers this today).
+
+**Phase 5 (done).** Mapper and lookups:
+
+- **Mapping model** (`flow-schema/src/mapping.ts`): the mapper edits JSONata object constructors.
+  `parseMapping` splits `{ "key": expr, ... }` into fields, nested objects and lists
+  (`[$src.items.{ ... }]`, item fields relative to the item); `printMapping` writes them back. A
+  parsed tree must print to the same JSONata AST, otherwise it is shown as code, so nothing is ever
+  rewritten into something different. No separate mapping format is stored: the FlowDoc stays the
+  single source of truth, and maps the AI writes open in the mapper as they are.
+- **Shapes** (`shape.ts`): field trees inferred from samples (merged across samples, optional and
+  nullable fields) or read from JSON Schema (http `requestSchema`, map `targetSchema`).
+  `sourcesAt(doc, step)` lists what a step can read (trigger, variables, earlier steps, loop items,
+  fault). Loop item samples come from evaluating the loop's list over the samples.
+- **Samples**: the latest runs' trigger input and step outputs (audit/debug tracing), or pasted per
+  source, stored in `integrations.samples` (outside the definition, so no hash change).
+- **Mapper UI** (`components/mapper`): sources | target | functions + test, a full-screen dialog
+  from map, invoke (request) and return (response) steps; click or drag to map, list rows, function
+  palette, target from sample with required-field flags, code view, test pane (server-side, with
+  lookups). Read-only while the integration is active.
+- **Lookups** (`lookups` table, S17): domains + rows; the first domain is the key (required,
+  unique). Grid editor, CSV import/export, usage list. `$lookupValue(name, from, value, to, default?)`
+  in the engine (`deps.lookup`, each lookup loaded once per run), in the AI's `test_expression`
+  and the mapper's test. The validator flags unknown lookup names (`unknown_lookup`) and required
+  target fields that are not mapped (`required_unmapped`, a warning). Lookups used by an active
+  integration cannot be deleted; used ones cannot be renamed.
+- **AI**: `list_lookups` tool; the prompt asks for map expressions as object constructors with
+  `targetSchema` when the target is known, so they open in the mapper. API `/api/v1/lookups` and
+  MCP `list_lookups`.
+- **Not yet**: drawn lines between trees (rows show the expression instead), XSLT-style
+  conditional/grouping templates, project-scoped lookups, editing schemas field by field.

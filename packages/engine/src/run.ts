@@ -1,4 +1,11 @@
-import { type FlowDoc, type Step, templateExpressions } from "@oicr/flow-schema";
+import {
+  type FlowDoc,
+  LOOKUP_FUNCTION,
+  type LookupTable,
+  lookupFunction,
+  type Step,
+  templateExpressions,
+} from "@oicr/flow-schema";
 import jsonata from "jsonata";
 
 /** What one executed step looks like in the activity stream (S22). */
@@ -42,6 +49,8 @@ export interface EngineDeps {
   signal?: AbortSignal;
   /** Total step executions allowed in one run (loops count each iteration). */
   maxSteps?: number;
+  /** Finds a lookup by name for $lookupValue (null: no such lookup). */
+  lookup?(name: string): Promise<LookupTable | null>;
 }
 
 export interface RunResult {
@@ -126,7 +135,12 @@ export async function runFlow(doc: FlowDoc, trigger: unknown, deps: EngineDeps):
     iteration: number | null;
   }
 
+  const lookupValue = lookupFunction(async (name) => {
+    if (!deps.lookup) throw new Error("Lookups are not available here.");
+    return deps.lookup(name);
+  });
   const bindings = (scope: Scope): Record<string, unknown> => ({
+    [LOOKUP_FUNCTION]: lookupValue,
     ...outputs,
     ...scope.loop,
     trigger,

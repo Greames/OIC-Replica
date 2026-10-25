@@ -11,6 +11,7 @@ import {
   opGetRun,
   opListEvents,
   opListIntegrations,
+  opListLookups,
   opListProjects,
   opListRuns,
   opRun,
@@ -88,6 +89,16 @@ function build(actor: KeyActor): McpServer {
       annotations: read,
     },
     (a) => call(() => opListRuns(actor, a)),
+  );
+  server.registerTool(
+    "list_lookups",
+    {
+      title: "List lookups",
+      description:
+        'Value maps between systems (e.g. country codes) with their domains and rows. Integrations use them as $lookupValue("name", "from domain", value, "to domain").',
+      annotations: read,
+    },
+    () => call(() => opListLookups(actor, { rows: true })),
   );
   server.registerTool(
     "get_run",

@@ -8,6 +8,7 @@ export * from "./repo/connections.js";
 export * from "./repo/events.js";
 export * from "./repo/instances.js";
 export * from "./repo/integrations.js";
+export * from "./repo/lookups.js";
 export * from "./repo/projects.js";
 export * from "./schedule.js";
 export * as schema from "./schema/index.js";

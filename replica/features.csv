@@ -2,7 +2,7 @@ feature,area,priority,original,clone,notes
 AI chat panel: describe an integration in plain English and get a draft flow,ai,must,no,yes,the core differentiator; S28
 AI asks clarifying questions when the request is ambiguous (systems fields schedule errors),ai,must,no,yes,
 AI picks existing connections or drafts new ones (no secrets in chat),ai,must,no,yes,user enters credentials in S16
-AI generates the mapping from sample payloads or schemas,ai,must,no,partial,user reviews in S08
+AI generates the mapping from sample payloads or schemas,ai,must,no,yes,opens in the mapper (S08)
 AI edits an existing flow by instruction (add retry / add a filter / send email on failure),ai,must,no,yes,
 Preview and diff of AI changes before they apply,ai,must,no,yes,nothing lands on the canvas unapproved
 AI output validated against the flow schema and canvas rules before showing,ai,must,no,yes,
@@ -48,11 +48,11 @@ Call JavaScript library function,actions,could,yes,no,
 Canvas validation badges and errors panel,design,must,yes,yes,
 Cut copy paste and collapse on canvas,design,could,yes,partial,
 Lock integration while another user edits,design,should,yes,no,
-Mapper with source and target trees and drag to map,mapper,must,yes,no,S08
-Mapper function library (string date math conditional),mapper,must,yes,no,
-Mapper test with sample input,mapper,should,yes,no,
-Mapper code view,mapper,could,yes,no,OIC shows XSLT; clone shows its own expression language
-Lookups (domain value maps) with CSV import export,lookups,must,yes,no,S17
+Mapper with source and target trees and drag to map,mapper,must,yes,yes,S08; click or drag; rows instead of drawn lines
+Mapper function library (string date math conditional),mapper,must,yes,yes,plus lookups
+Mapper test with sample input,mapper,should,yes,yes,samples from runs or pasted
+Mapper code view,mapper,could,yes,yes,JSONata instead of XSLT
+Lookups (domain value maps) with CSV import export,lookups,must,yes,yes,S17
 JavaScript libraries usable in maps,libraries,could,yes,no,S18
 Business identifiers (primary plus up to 2 secondary),tracking,must,yes,yes,S11
 Activate and deactivate integration,lifecycle,must,yes,yes,S12

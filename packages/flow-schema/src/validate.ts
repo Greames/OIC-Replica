@@ -1,4 +1,5 @@
 import { parseExpression, templateExpressions } from "./expressions.js";
+import { mappedKeys, parseMapping } from "./mapping.js";
 import { FlowDoc, type Step } from "./schema.js";
 import { type StepContext, walkSteps } from "./walk.js";
 
@@ -15,7 +16,9 @@ export type IssueCode =
   | "unknown_connection"
   | "connection_role"
   | "unknown_library"
-  | "business_id_primary";
+  | "business_id_primary"
+  | "unknown_lookup"
+  | "required_unmapped";
 
 export interface Issue {
   code: IssueCode;
@@ -30,6 +33,8 @@ export interface ValidationContext {
   connections?: Record<string, { role: "trigger" | "invoke" | "trigger_invoke"; adapter: string }>;
   /** Library names that exist. When given, js steps are checked. */
   libraries?: string[];
+  /** Lookup names that exist. When given, $lookupValue("name", ...) is checked. */
+  lookups?: string[];
 }
 
 export type ValidationResult =
@@ -141,6 +146,24 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
     }
 
     for (const e of expressionsOf(step)) checkExpression(e.source, at(...e.key), c, e.template);
+
+    // A target schema's required fields should be filled.
+    if (step.type === "map" && Array.isArray(step.targetSchema?.required)) {
+      const fields = parseMapping(step.expression);
+      if (fields) {
+        const have = mappedKeys(fields);
+        const missing = (step.targetSchema.required as unknown[]).filter(
+          (k): k is string => typeof k === "string" && !have.has(k),
+        );
+        if (missing.length)
+          warnings.push({
+            code: "required_unmapped",
+            message: `Required target field(s) not mapped: ${missing.join(", ")}.`,
+            path: at("expression"),
+            stepId: step.id,
+          });
+      }
+    }
   });
 
   if (syncHttp && !hasReturn) {
@@ -206,6 +229,18 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
           stepId: c?.step.id,
         });
         continue;
+      }
+      if (ctx.lookups) {
+        for (const name of r.lookups) {
+          if (!ctx.lookups.includes(name)) {
+            errors.push({
+              code: "unknown_lookup",
+              message: `Lookup "${name}" does not exist. Create it under Lookups, or use one of: ${ctx.lookups.join(", ") || "(none yet)"}.`,
+              path,
+              stepId: c?.step.id,
+            });
+          }
+        }
       }
       // Business ids are read after the trigger and may use any step's output.
       const known = new Set(

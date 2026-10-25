@@ -79,6 +79,8 @@ export interface ParsedExpression {
   error?: ExpressionError;
   /** $names the expression reads that it does not bind itself. */
   references: string[];
+  /** Lookup names used as $lookupValue("name", ...). */
+  lookups: string[];
 }
 
 interface AstNode {
@@ -94,11 +96,17 @@ export function parseExpression(source: string): ParsedExpression {
     ast = jsonata(source).ast() as AstNode;
   } catch (e) {
     const err = e as { message?: string; position?: number };
-    return { ok: false, error: { message: err.message ?? String(e), position: err.position }, references: [] };
+    return {
+      ok: false,
+      error: { message: err.message ?? String(e), position: err.position },
+      references: [],
+      lookups: [],
+    };
   }
 
   const read = new Set<string>();
   const bound = new Set<string>();
+  const lookups = new Set<string>();
 
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) {
@@ -123,6 +131,10 @@ export function parseExpression(source: string): ParsedExpression {
       return;
     } else if (n.type === "function" || n.type === "partial") {
       // $name(...) is a call, not a read; only check the arguments.
+      const proc = n.procedure as AstNode | undefined;
+      const first = (n.arguments as AstNode[] | undefined)?.[0];
+      if (proc?.value === "lookupValue" && first?.type === "string" && typeof first.value === "string")
+        lookups.add(first.value);
       visit(n.arguments);
       return;
     }
@@ -139,7 +151,7 @@ export function parseExpression(source: string): ParsedExpression {
     // "" is $ (context), "$" is $$ (root)
     (name) => name !== "" && name !== "$" && !bound.has(name) && !BUILTINS.has(name),
   );
-  return { ok: true, references: references.sort() };
+  return { ok: true, references: references.sort(), lookups: [...lookups].sort() };
 }
 
 /** Splits a template like "Order {{$order.id}} failed" into its expressions. */
@@ -150,4 +162,14 @@ export function templateExpressions(template: string): { source: string; offset:
     out.push({ source: (m[1] ?? "").trim(), offset: m.index });
   }
   return out;
+}
+
+/** Evaluates an expression and returns plain JSON (sequences become arrays). */
+export async function evaluateExpression(
+  source: string,
+  input: unknown,
+  bindings: Record<string, unknown> = {},
+): Promise<unknown> {
+  const v = await jsonata(source).evaluate(input, bindings);
+  return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 }

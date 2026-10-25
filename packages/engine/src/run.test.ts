@@ -250,6 +250,29 @@ describe("runFlow", () => {
     expect(r).toMatchObject({ status: "succeeded", stopped: true, steps: 1 });
   });
 
+  it("translates values with lookups, loading each lookup once", async () => {
+    const doc = flow({
+      steps: [
+        {
+          id: "m",
+          type: "map",
+          expression:
+            '{ "a": $lookupValue("countries", "shop", $trigger.c, "erp"), "b": $lookupValue("countries", "shop", "FR", "erp", "??") }',
+        },
+        { id: "bad", type: "map", expression: '$lookupValue("missing", "a", 1, "b")' },
+      ],
+    });
+    const h = harness();
+    const lookup = vi.fn(async (name: string) =>
+      name === "countries" ? { name, domains: ["shop", "erp"], rows: [["US", "USA"]] } : null,
+    );
+    const r = await runFlow(doc, { c: "US" }, { ...h.deps, lookup });
+    expect(h.records[0]?.output).toEqual({ a: "USA", b: "??" });
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(r.fault).toMatchObject({ code: "expression_error", stepId: "bad" });
+    expect(r.fault?.message).toContain('Lookup "missing" does not exist.');
+  });
+
   it("turns expression errors into faults on the step", async () => {
     const doc = flow({ steps: [{ id: "m", type: "map", expression: "$number('abc')" }] });
     const h = harness();

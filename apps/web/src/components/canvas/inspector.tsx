@@ -8,7 +8,7 @@ import {
   type Step,
   templateExpressions,
 } from "@oicr/flow-schema";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Shuffle, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
@@ -87,6 +87,7 @@ export function Inspector({
   onChange,
   onDelete,
   onMove,
+  onOpenMapper,
 }: {
   doc: FlowDoc;
   step: Step;
@@ -96,6 +97,8 @@ export function Inspector({
   onChange: (patch: Patch) => void;
   onDelete: () => void;
   onMove: (dir: -1 | 1) => void;
+  /** Opens the visual mapper for one of the step's expressions. */
+  onOpenMapper?: (field: "expression" | "request" | "body") => void;
 }) {
   const s = step as Step & Record<string, any>;
   const f = (key: string) => `insp-${step.id}-${key}`;
@@ -164,6 +167,11 @@ export function Inspector({
             </Select>
           </Field>
           {text("operation", "Operation", { mono: true, hint: 'e.g. "GET /orders" or "POST /orders/{id}"' })}
+          {onOpenMapper && (
+            <Button size="sm" variant="secondary" onClick={() => onOpenMapper("request")}>
+              <Shuffle aria-hidden /> Map the request
+            </Button>
+          )}
           <ExpressionField
             id={f("request")}
             label="Request (JSONata)"
@@ -197,6 +205,11 @@ export function Inspector({
         </>
       )}
 
+      {s.type === "map" && onOpenMapper && (
+        <Button size="sm" variant="secondary" onClick={() => onOpenMapper("expression")}>
+          <Shuffle aria-hidden /> Open mapper
+        </Button>
+      )}
       {s.type === "map" && (
         <ExpressionField
           id={f("expression")}
@@ -421,6 +434,11 @@ export function Inspector({
       {s.type === "return" && (
         <>
           {text("status", "HTTP status", { type: "number" })}
+          {onOpenMapper && (
+            <Button size="sm" variant="secondary" onClick={() => onOpenMapper("body")}>
+              <Shuffle aria-hidden /> Map the response
+            </Button>
+          )}
           <ExpressionField
             id={f("body")}
             label="Body (JSONata)"

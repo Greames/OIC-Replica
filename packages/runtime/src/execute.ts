@@ -8,6 +8,7 @@ import {
   instances,
   integrations,
   loadConnectionForRun,
+  loadLookup,
   PAYLOAD_LIMITS,
   startInstance,
 } from "@oicr/db";
@@ -71,6 +72,7 @@ export async function executeInstance(db: Db, instanceId: string, opts: ExecuteO
   const deps: EngineDeps = {
     signal: opts.signal,
     notify: emailNotifier(),
+    lookup: (name) => loadLookup(db, instance.orgId, name),
     async invoke(call) {
       let conn: Awaited<ReturnType<typeof loadConnectionForRun>>;
       try {

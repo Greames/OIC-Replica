@@ -8,9 +8,12 @@ import {
   createConnection,
   createDb,
   createIntegration,
+  createLookup,
   createProject,
+  deleteLookup,
   failStaleInstances,
   getInstance,
+  getSamples,
   getTriggerToken,
   instances,
   listInstances,
@@ -18,8 +21,10 @@ import {
   orgs,
   saveDefinition,
   schedules,
+  setSample,
   setSchedule,
   testConnection,
+  updateLookup,
   users,
 } from "@oicr/db";
 import { runMigrations } from "@oicr/db/migrate";
@@ -297,5 +302,79 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(await failStaleInstances(db!, 600_000)).toBeGreaterThanOrEqual(1);
     const [after] = await db!.select().from(instances).where(eq(instances.id, row!.id));
     expect(after?.errorCode).toBe("worker_lost");
+  });
+  it("translates with lookups at run time, guards lookups in use, and gives the mapper samples", async () => {
+    await expect(
+      createLookup(db!, actor, {
+        name: "codes",
+        domains: ["shop", "erp"],
+        rows: [
+          ["A", "1"],
+          ["A", "2"],
+        ],
+      }),
+    ).rejects.toThrow(/is in shop twice \(rows 1 and 2\)/);
+    await expect(createLookup(db!, actor, { name: "codes", domains: ["shop"], rows: [] })).rejects.toThrow(
+      /at least two/,
+    );
+    const lookup = await createLookup(db!, actor, {
+      name: "codes",
+      domains: ["shop", "erp"],
+      rows: [
+        ["A1", "ERP-1", "extra"],
+        ["", ""],
+        ["A2", "ERP-2"],
+      ],
+    });
+    expect(lookup.rows).toEqual([
+      ["A1", "ERP-1"],
+      ["A2", "ERP-2"],
+    ]);
+    await expect(createLookup(db!, actor, { name: "codes", domains: ["a", "b"], rows: [] })).rejects.toThrow(
+      /already exists/,
+    );
+
+    const integ = await createIntegration(db!, actor, { projectId, name: "Lookup run", style: "application" });
+    const definition = {
+      schemaVersion: 1,
+      style: "application",
+      trigger: { id: "t", type: "http", sync: true },
+      steps: [
+        { id: "get", type: "invoke", connection: "mock_api", operation: "GET /orders" },
+        {
+          id: "m",
+          type: "map",
+          expression: '{ "erp": $lookupValue("codes", "shop", $get.body.orders.id, "erp", "?") }',
+        },
+        { id: "r", type: "return", body: "$m" },
+      ],
+    };
+    const bad = await saveDefinition(
+      db!,
+      actor,
+      integ.id,
+      { ...definition, steps: [{ id: "m", type: "map", expression: '$lookupValue("nope", "a", 1, "b")' }] },
+      integ.definitionHash,
+    );
+    expect(bad.errors.map((e) => e.code)).toContain("unknown_lookup");
+    const saved = await saveDefinition(db!, actor, integ.id, definition, bad.integration.definitionHash);
+    expect(saved.errors).toEqual([]);
+    const active = await activateIntegration(db!, actor, integ.id);
+    const run = await startRun(db!, active, { input: { hello: "world" }, kind: "manual", sync: true });
+    expect(run.response?.body).toEqual({ erp: ["ERP-1", "ERP-2"] });
+
+    await expect(deleteLookup(db!, actor, lookup.id)).rejects.toThrow(/used by active integration/);
+    await expect(
+      updateLookup(db!, actor, lookup.id, { name: "renamed", domains: ["shop", "erp"], rows: [] }),
+    ).rejects.toThrow(/Renaming it would break/);
+    await updateLookup(db!, actor, lookup.id, { name: "codes", domains: ["shop", "erp"], rows: [["A1", "X"]] });
+
+    const samples = await getSamples(db!, actor, integ.id);
+    expect(samples.run.trigger).toEqual({ hello: "world" });
+    expect(samples.run.steps.m).toEqual({ erp: ["ERP-1", "ERP-2"] });
+    await setSample(db!, actor, integ.id, "get", { body: { orders: [] } });
+    expect((await getSamples(db!, actor, integ.id)).pasted).toEqual({ get: { body: { orders: [] } } });
+    await setSample(db!, actor, integ.id, "get", null);
+    expect((await getSamples(db!, actor, integ.id)).pasted).toEqual({});
   });
 });
