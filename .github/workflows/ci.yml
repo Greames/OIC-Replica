@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oicr
+          POSTGRES_PASSWORD: oicr
+          POSTGRES_DB: oicr
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U oicr" --health-interval 3s --health-retries 20
+    env:
+      DATABASE_URL: postgres://oicr:oicr@localhost:5432/oicr
+      TEST_DATABASE_URL: postgres://oicr:oicr@localhost:5432/oicr
+      BETTER_AUTH_SECRET: ci-only-secret-0d9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b
+      BETTER_AUTH_URL: http://localhost:3000
+      AUTH_RATE_LIMIT: "off"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @oicr/db migrate
+      - run: pnpm --filter @oicr/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @oicr/web e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results

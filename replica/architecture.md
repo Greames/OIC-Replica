@@ -30,7 +30,7 @@ renames it before launch.
 | --- | --- | --- |
 | language | TypeScript everywhere (Node 22) | one language for UI, engine, adapters and AI tools; shared Zod types |
 | repo | pnpm workspaces + Turborepo | apps and packages in one place, fast cached builds |
-| web | Next.js 15 (App Router, React 19) | server actions + route handlers for the API; streaming for the AI chat |
+| web | Next.js 16 (App Router, React 19) | server actions + route handlers for the API; streaming for the AI chat |
 | UI | Tailwind CSS v4 + shadcn/ui + lucide icons | modern, accessible, our own components; tokens come from replica-design |
 | canvas | React Flow (@xyflow/react) + elkjs auto-layout | the standard for node editors; auto-layout means AI-built flows look tidy without hand placement |
 | mapper UI | custom two-tree component + Monaco for expressions | nothing off the shelf fits; Monaco gives autocomplete over the schema |
@@ -66,6 +66,7 @@ packages/
   mapping/        JSONata runtime, function library, lookups, schema inference from samples
   ai/             provider interface, tools, system prompts, builder loop, guardrails
   db/             Drizzle schema, migrations, repos (org-scoped data access)
+  auth/           Better Auth config (email + Google, organizations, roles)
   events/         outbox writer, event types, formatters (one-liners for chat)
   ui/             shared components, tokens
 evals/            AI builder eval cases + runner
@@ -280,7 +281,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 
 | phase | name | delivers | screens | tables | routes |
 | --- | --- | --- | --- | --- | --- |
-| **0** | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
+| **0** ✅ | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
 | **1** | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
 | **2** | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
 | **3** | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |

@@ -13,9 +13,9 @@ Build from an OpenAPI / WSDL URL or file the user provides,ai,should,no,no,
 AI best-practice review of a flow,ai,could,partial,no,OIC 26.07 added AI best-practice checks
 Ask observability questions in English (failures for order 10045 yesterday),ai,could,no,no,
 Prompt and model audit log per change,ai,should,no,no,who asked what and what changed
-Sign in and multi-user tenant,platform,must,yes,no,own auth instead of OCI IAM
-Roles: admin developer monitor viewer,platform,should,yes,no,simplified from IAM groups
-Projects that bundle integrations connections lookups libraries,projects,must,yes,no,S02 S03
+Sign in and multi-user tenant,platform,must,yes,yes,own auth instead of OCI IAM
+Roles: admin developer monitor viewer,platform,should,yes,partial,simplified from IAM groups
+Projects that bundle integrations connections lookups libraries,projects,must,yes,partial,S02 S03
 Create connection from adapter picker,connections,must,yes,no,S14 S15 S16
 Connection security policies: basic auth API key OAuth client credentials,connections,must,yes,no,
 OAuth authorization code with consent,connections,should,yes,no,
