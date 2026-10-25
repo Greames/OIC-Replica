@@ -1,5 +1,5 @@
 # Everything needed to run OIC-Replica locally or self-hosted.
-#   cp .env.example .env   (set BETTER_AUTH_SECRET)
+#   cp .env.example .env   (set BETTER_AUTH_SECRET and SECRETS_KEY)
 #   docker compose up --build
 # Postgres only, for `pnpm dev`:  docker compose up -d postgres minio
 
@@ -40,15 +40,31 @@ services:
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
     ports: ["3000:3000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 10s
+
+  worker:
+    build: .
+    command: ["node", "apps/worker/dist/main.js"]
+    environment:
+      DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
 
 volumes:
   pgdata:

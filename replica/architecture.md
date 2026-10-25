@@ -282,7 +282,7 @@ event feed that reports it. Feature rows refer to `features.csv`.
 | phase | name | delivers | screens | tables | routes |
 | --- | --- | --- | --- | --- | --- |
 | **0** ✅ | Foundation | monorepo, docker compose (Postgres, MinIO), Drizzle schema + migration, Better Auth sign-in with orgs, app shell + nav, **FlowDoc schema + validator + tests**, CI | S01, S27 | orgs, memberships, projects + auth | projects |
-| **1** | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
+| **1** ✅ | Vertical slice | REST connection (basic/API key) with test, a scheduled or REST-triggered integration whose FlowDoc is edited as JSON, engine runs invoke → map → invoke, instances list + detail with steps | S02-S04, S14-S16, S21, S22 (basic) | connections, integrations, schedules, instances, instance_steps | connections, integrations, run, activate, instances, /t/... |
 | **2** | AI builder v1 | chat panel, Claude tool loop with list/describe/infer/ask/propose/test_map, validation + repair, diff review, accept → integration, eval suite v1 (20 cases) | S28, S29 | ai_sessions, ai_messages, ai_changes | ai/* |
 | **3** | Visual canvas | React Flow canvas rendering the FlowDoc with elk layout, insert/move/delete nodes, all v1 node types, validation badges, read-only replay in S22, AI edits shown on canvas | S06, S22 | — | definition, validate |
 | **4** | Every update: events, channels, MCP, Hermes | outbox + SSE live UI, Slack/Telegram/webhook/email channels, API keys with scopes, MCP server, Hermes setup guide + example cron job | S26 (channels, keys) | events, notification_channels, deliveries, api_keys | events, channels, api-keys, /mcp |
@@ -294,3 +294,32 @@ event feed that reports it. Feature rows refer to `features.csv`.
 
 Then: should-haves and could-haves by area, then the fixes
 `/replica-entrepreneur` finds.
+
+## Implementation notes
+
+**Phase 1 (done).** What was built, and where it differs from the plan above:
+
+- **Engine** (`packages/engine`) is pure: adapters, persistence, email and sleep are injected. It
+  supports every v1 step type except `js` (faults with `not_supported` until phase 9). `forEach`
+  runs sequentially; `parallel` is accepted but not used yet. One-element JSONata sequences are
+  treated as one-item arrays in loops.
+- **Retries** happen only for errors the adapter marks retryable (timeouts, connection errors,
+  429, 5xx), with exponential backoff from `backoffSeconds`.
+- **Resumability**: each step is written as it finishes, but a crashed worker's run is not resumed
+  from its last step yet. The worker's reaper marks runs stuck in `running` for over
+  `STALE_RUN_MINUTES` (default 30) as failed with `worker_lost`. Resume-from-step is planned with
+  resubmit in phase 6.
+- **Payloads** live in Postgres (`instances.input/output`, `instance_steps.input/output`), capped
+  at 64 KB (audit) or 1 MB (debug), with a truncated preview past that. With `production` tracing
+  only failed steps keep payloads. Object storage (MinIO/R2) replaces this when payloads need to
+  grow past that.
+- **Trigger auth**: one bearer token per application integration, stored encrypted, shown and
+  rotated on the integration page. Per-integration basic auth / OAuth comes later.
+- **Trigger input**: `$trigger` is the request body (JSON or text), or the query for GET/DELETE.
+- **Schedules**: ISO intervals (`PT15M`, minimum 1 minute) or 5-field cron in an IANA time zone.
+  Missed slots are not replayed; overlapping runs are skipped unless `allowOverlap`.
+- **Outbound safety**: the REST adapter blocks private, loopback and link-local addresses at connect
+  time (DNS rebinding safe). `ALLOW_PRIVATE_NETWORK=true` lifts this for local development only.
+- **Editing**: active integrations are read-only (deactivate first, as in OIC). Saves carry the
+  definition hash and are refused if it changed meanwhile. Invalid definitions save as drafts with
+  their errors listed by path.

@@ -1,11 +1,13 @@
-import { getProject, NotFoundError } from "@oicr/db";
-import { Cable, Table2, Workflow } from "lucide-react";
+import { can, getProject, listConnections, listIntegrations, NotFoundError } from "@oicr/db";
+import { Cable, Workflow } from "lucide-react";
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { StatusBadge } from "@/components/status-badge";
 import { Badge, Card, PageHeader } from "@/components/ui/card";
 import { db } from "@/lib/db";
+import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { NewIntegrationForm } from "../../integrations/new-integration-form";
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,12 +17,11 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-
-  const sections = [
-    { icon: Workflow, title: "Integrations", phase: 1, text: "Flows that move data between your systems." },
-    { icon: Cable, title: "Connections", phase: 1, text: "Endpoints and credentials your integrations use." },
-    { icon: Table2, title: "Lookups", phase: 5, text: "Value maps between systems, like country codes." },
-  ];
+  const [integrations, connections] = await Promise.all([
+    listIntegrations(db, viewer, { projectId: id }),
+    listConnections(db, viewer),
+  ]);
+  const visibleConnections = connections.filter((c) => c.projectId === id || c.projectId === null);
 
   return (
     <>
@@ -29,17 +30,61 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
         description={project.description || undefined}
         actions={<Badge className="font-mono">{project.identifier}</Badge>}
       />
-      <div className="grid gap-4 sm:grid-cols-3">
-        {sections.map(({ icon: Icon, title, phase, text }) => (
-          <Card key={title} className="p-5">
-            <div className="flex items-center justify-between">
-              <Icon className="size-5 text-fg-muted" aria-hidden />
-              <Badge>Phase {phase}</Badge>
-            </div>
-            <h2 className="mt-3 font-medium">{title}</h2>
-            <p className="mt-1 text-sm text-fg-muted">{text}</p>
+
+      {can(viewer.role, "build") && (
+        <Card className="mb-6 p-5">
+          <NewIntegrationForm projects={[{ id: project.id, name: project.name }]} defaultProjectId={project.id} />
+        </Card>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 font-medium">
+            <Workflow className="size-4 text-fg-muted" aria-hidden /> Integrations
+          </h2>
+          <Card className="divide-y divide-border">
+            {integrations.length === 0 && <p className="p-5 text-sm text-fg-muted">None yet.</p>}
+            {integrations.map((i) => (
+              <Link
+                key={i.id}
+                href={`/integrations/${i.id}`}
+                className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-muted"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{i.name}</div>
+                  <div className="font-mono text-xs text-fg-muted">{i.identifier}</div>
+                </div>
+                <StatusBadge status={i.status} />
+              </Link>
+            ))}
           </Card>
-        ))}
+        </section>
+        <section>
+          <h2 className="mb-3 flex items-center gap-2 font-medium">
+            <Cable className="size-4 text-fg-muted" aria-hidden /> Connections it can use
+          </h2>
+          <Card className="divide-y divide-border">
+            {visibleConnections.length === 0 && (
+              <p className="p-5 text-sm text-fg-muted">
+                None yet.{" "}
+                <Link href="/connections/new" className="text-accent hover:underline">
+                  Add one
+                </Link>
+                .
+              </p>
+            )}
+            {visibleConnections.map((c) => (
+              <Link
+                key={c.id}
+                href={`/connections/${c.id}`}
+                className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-muted"
+              >
+                <span className="truncate font-mono text-sm">{c.identifier}</span>
+                <StatusBadge status={c.status} />
+              </Link>
+            ))}
+          </Card>
+        </section>
       </div>
     </>
   );

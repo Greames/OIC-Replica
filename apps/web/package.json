@@ -11,9 +11,12 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@oicr/adapters": "workspace:*",
     "@oicr/auth": "workspace:*",
     "@oicr/db": "workspace:*",
+    "@oicr/engine": "workspace:*",
     "@oicr/flow-schema": "workspace:*",
+    "@oicr/runtime": "workspace:*",
     "better-auth": "^1.7.12",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

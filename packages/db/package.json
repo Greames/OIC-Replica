@@ -22,7 +22,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@oicr/adapters": "workspace:*",
     "@oicr/flow-schema": "workspace:*",
+    "cron-parser": "^5.10.2",
     "drizzle-orm": "^0.45.4",
     "postgres": "^3.4.9",
     "zod": "^4.6.7"

@@ -1,0 +1,122 @@
+import { can, connectionIndex, describeSchedule, getIntegration, listInstances, NotFoundError, orgs } from "@oicr/db";
+import type { Issue } from "@oicr/flow-schema";
+import { eq } from "drizzle-orm";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { RunsTable } from "@/components/runs-table";
+import { StatusBadge } from "@/components/status-badge";
+import { Card, PageHeader } from "@/components/ui/card";
+import { db } from "@/lib/db";
+import { UUID } from "@/lib/errors";
+import { requireViewer } from "@/lib/session";
+import { templatesFor } from "@/lib/templates";
+import { DefinitionEditor } from "./definition-editor";
+import { Lifecycle } from "./lifecycle";
+import { ScheduleForm } from "./schedule-form";
+import { TriggerPanel } from "./trigger-panel";
+
+export default async function IntegrationPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!UUID.test(id)) notFound();
+  const viewer = await requireViewer();
+  const integration = await getIntegration(db, viewer, id).catch((e) => {
+    if (e instanceof NotFoundError) notFound();
+    throw e;
+  });
+  const [runs, conns, [org]] = await Promise.all([
+    listInstances(db, viewer, { integrationId: id, limit: 10 }),
+    connectionIndex(db, viewer.orgId),
+    db.select({ slug: orgs.slug }).from(orgs).where(eq(orgs.id, viewer.orgId)),
+  ]);
+
+  const def = integration.definition as { trigger?: { type?: string; method?: string; path?: string; sync?: boolean } };
+  const isHttp = def.trigger?.type === "http";
+  const active = integration.status === "active";
+  const canBuild = can(viewer.role, "build");
+  const base = (process.env.BETTER_AUTH_URL ?? "http://localhost:3000").replace(/\/$/, "");
+  const triggerPath = def.trigger?.path && def.trigger.path !== "/" ? def.trigger.path : "";
+  const invokeConns = Object.entries(conns)
+    .filter(([, c]) => c.role !== "trigger")
+    .map(([k]) => k);
+
+  return (
+    <>
+      <PageHeader
+        title={integration.name}
+        description={`${integration.identifier} · ${integration.version} · ${integration.style === "scheduled" ? "runs on a schedule" : "runs when called"}`}
+        actions={<StatusBadge status={integration.status} />}
+      />
+      <p className="-mt-4 mb-6 text-sm text-fg-muted">
+        In{" "}
+        <Link href={`/projects/${integration.projectId}`} className="text-accent hover:underline">
+          {integration.projectName}
+        </Link>
+      </p>
+
+      <Card className="mb-6 p-5">
+        <Lifecycle
+          id={id}
+          status={integration.status}
+          tracingLevel={integration.tracingLevel}
+          canOperate={can(viewer.role, "operate")}
+          needsPayload={isHttp && def.trigger?.sync === true}
+        />
+        {!active && integration.status !== "configured" && (
+          <p className="mt-3 text-sm text-fg-muted">
+            {(integration.validationErrors as Issue[]).length > 0
+              ? "Fix the problems under Definition, save, then activate."
+              : "Add steps under Definition (or start from a template), save, then activate."}
+          </p>
+        )}
+      </Card>
+
+      {integration.style === "scheduled" && (
+        <Card className="mb-6 p-5">
+          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="font-medium">Schedule</h2>
+            {integration.schedule && (
+              <span className="text-sm text-fg-muted">
+                {describeSchedule(integration.schedule)}
+                {active &&
+                  integration.schedule.nextRunAt &&
+                  ` · next run ${integration.schedule.nextRunAt.toLocaleString()}`}
+              </span>
+            )}
+          </div>
+          <ScheduleForm id={id} initial={integration.schedule} disabled={!canBuild} />
+        </Card>
+      )}
+
+      {isHttp && active && canBuild && org && (
+        <Card className="mb-6 p-5">
+          <h2 className="mb-4 font-medium">Call it</h2>
+          <TriggerPanel
+            id={id}
+            url={`${base}/t/${org.slug}/${integration.identifier}${triggerPath}`}
+            method={def.trigger?.method ?? "POST"}
+          />
+        </Card>
+      )}
+
+      <Card className="mb-6 p-5">
+        <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="font-medium">Definition</h2>
+          <span className="text-xs text-fg-muted">
+            JSON for now. The AI builder (phase 2) and the visual canvas (phase 3) edit this same document.
+          </span>
+        </div>
+        <DefinitionEditor
+          id={id}
+          initial={integration.definition}
+          hash={integration.definitionHash}
+          initialErrors={integration.validationErrors as Issue[]}
+          locked={active || !canBuild}
+          templates={templatesFor(integration.style, invokeConns)}
+        />
+      </Card>
+
+      <h2 className="mb-3 font-medium">Recent runs</h2>
+      <RunsTable runs={runs.items} showIntegration={false} />
+    </>
+  );
+}

@@ -30,6 +30,16 @@
     "S3_*",
     "PW_CHROMIUM_PATH",
     "E2E_NO_SERVER",
-    "CI"
+    "CI",
+    "SECRETS_KEY",
+    "ALLOW_PRIVATE_NETWORK",
+    "RESEND_API_KEY",
+    "EMAIL_FROM",
+    "WORKER_CONCURRENCY",
+    "SCHEDULER_TICK_MS",
+    "STALE_RUN_MINUTES",
+    "SYNC_TIMEOUT_SECONDS",
+    "MOCK_API_PORT",
+    "PORT"
   ]
 }

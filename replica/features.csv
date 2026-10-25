@@ -16,36 +16,36 @@ Prompt and model audit log per change,ai,should,no,no,who asked what and what ch
 Sign in and multi-user tenant,platform,must,yes,yes,own auth instead of OCI IAM
 Roles: admin developer monitor viewer,platform,should,yes,partial,simplified from IAM groups
 Projects that bundle integrations connections lookups libraries,projects,must,yes,partial,S02 S03
-Create connection from adapter picker,connections,must,yes,no,S14 S15 S16
-Connection security policies: basic auth API key OAuth client credentials,connections,must,yes,no,
+Create connection from adapter picker,connections,must,yes,yes,S14 S15 S16
+Connection security policies: basic auth API key OAuth client credentials,connections,must,yes,partial,
 OAuth authorization code with consent,connections,should,yes,no,
-Test connection before save with error message,connections,must,yes,no,
-Encrypted secret storage for credentials,connections,must,yes,no,own vault or KMS
-REST adapter as trigger and invoke,adapters,must,yes,no,JSON sample or schema
+Test connection before save with error message,connections,must,yes,yes,
+Encrypted secret storage for credentials,connections,must,yes,yes,own vault or KMS
+REST adapter as trigger and invoke,adapters,must,yes,yes,JSON sample or schema
 SOAP adapter as trigger and invoke,adapters,should,yes,no,WSDL upload
 FTP / SFTP adapter (read write list),adapters,must,yes,no,
 Database adapter (Postgres MySQL) query and stored procedure,adapters,must,yes,no,
 Oracle Database adapter,adapters,should,yes,no,via public drivers
-Scheduler trigger (simple and iCal),adapters,must,yes,no,S10
-Email notification action,actions,must,yes,no,
+Scheduler trigger (simple and iCal),adapters,must,yes,yes,S10
+Email notification action,actions,must,yes,partial,
 Kafka / message queue adapter,adapters,could,yes,no,
-Adapter SDK so new adapters are a plugin,adapters,must,no,no,clone-only: makes the catalogue cheap
-Create application (event / request) integration,design,must,yes,no,S05
-Create scheduled integration,design,must,yes,no,S05
+Adapter SDK so new adapters are a plugin,adapters,must,no,partial,clone-only: makes the catalogue cheap
+Create application (event / request) integration,design,must,yes,yes,S05
+Create scheduled integration,design,must,yes,yes,S05
 Visual canvas with trigger invoke and actions,design,must,yes,no,S06
 Insert actions between nodes and inside branches,design,must,yes,no,
-Switch with routing expressions and otherwise,actions,must,yes,no,
-For-each over repeating element,actions,must,yes,no,
-While loop,actions,should,yes,no,
-Scope with fault handler,actions,must,yes,no,
-Throw new fault and re-throw fault,actions,must,yes,no,
-Global fault handler,actions,should,yes,no,
-Assign variables via expression builder,actions,must,yes,no,S09
+Switch with routing expressions and otherwise,actions,must,yes,yes,
+For-each over repeating element,actions,must,yes,yes,
+While loop,actions,should,yes,yes,
+Scope with fault handler,actions,must,yes,yes,
+Throw new fault and re-throw fault,actions,must,yes,yes,
+Global fault handler,actions,should,yes,yes,
+Assign variables via expression builder,actions,must,yes,partial,S09
 Stitch (build payload incrementally),actions,should,yes,no,
-Logger action,actions,should,yes,no,
-Wait action,actions,should,yes,no,
+Logger action,actions,should,yes,yes,
+Wait action,actions,should,yes,yes,
 Call JavaScript library function,actions,could,yes,no,
-Canvas validation badges and errors panel,design,must,yes,no,
+Canvas validation badges and errors panel,design,must,yes,partial,
 Cut copy paste and collapse on canvas,design,could,yes,no,
 Lock integration while another user edits,design,should,yes,no,
 Mapper with source and target trees and drag to map,mapper,must,yes,no,S08
@@ -54,18 +54,18 @@ Mapper test with sample input,mapper,should,yes,no,
 Mapper code view,mapper,could,yes,no,OIC shows XSLT; clone shows its own expression language
 Lookups (domain value maps) with CSV import export,lookups,must,yes,no,S17
 JavaScript libraries usable in maps,libraries,could,yes,no,S18
-Business identifiers (primary plus up to 2 secondary),tracking,must,yes,no,S11
-Activate and deactivate integration,lifecycle,must,yes,no,S12
-Tracing levels (production audit debug),lifecycle,should,yes,no,
+Business identifiers (primary plus up to 2 secondary),tracking,must,yes,yes,S11
+Activate and deactivate integration,lifecycle,must,yes,yes,S12
+Tracing levels (production audit debug),lifecycle,should,yes,yes,
 Integration versions side by side,lifecycle,should,yes,no,
-Test run page for request-triggered integrations,lifecycle,should,yes,no,S13
-Durable async execution with step persistence,runtime,must,yes,no,the engine
-Sync request-response with timeout,runtime,must,yes,no,OIC caps at 300 s
-Payload size limits enforced,runtime,should,yes,no,100 MB cloud 10 MB db/queue 1 GB binary
+Test run page for request-triggered integrations,lifecycle,should,yes,yes,S13
+Durable async execution with step persistence,runtime,must,yes,partial,the engine
+Sync request-response with timeout,runtime,must,yes,yes,OIC caps at 300 s
+Payload size limits enforced,runtime,should,yes,partial,100 MB cloud 10 MB db/queue 1 GB binary
 Message metering for billing,runtime,must,yes,no,needed by replica-launch pricing
 Observability dashboard with counters and charts,observability,must,yes,no,S20
-Instances list with filters and business id search,observability,must,yes,no,S21
-Instance detail with activity stream and payloads,observability,must,yes,no,S22
+Instances list with filters and business id search,observability,must,yes,yes,S21
+Instance detail with activity stream and payloads,observability,must,yes,yes,S22
 Errors list with resubmit and discard (single and bulk),observability,must,yes,no,S23
 Per-integration stats,observability,could,yes,no,S24
 Error notification emails,observability,should,yes,no,

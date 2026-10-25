@@ -1,0 +1,31 @@
+{
+  "name": "@oicr/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oicr/adapters": "workspace:*",
+    "@oicr/db": "workspace:*",
+    "@oicr/engine": "workspace:*",
+    "@oicr/flow-schema": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "pg-boss": "^12.38.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.5"
+  }
+}

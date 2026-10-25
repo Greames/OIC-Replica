@@ -22,15 +22,15 @@ every step by hand.
 | phase | | status |
 | --- | --- | --- |
 | 0 | Foundation: monorepo, auth + workspaces, projects, flow format, CI, Docker | done |
-| 1 | Vertical slice: REST connections, run an integration, see every step | next |
-| 2 | AI builder | |
+| 1 | Vertical slice: REST connections, engine, worker, schedules, HTTP triggers, runs with every step | done |
+| 2 | AI builder | next |
 | 3 | Visual canvas | |
 | 4 | Every update: events, Slack/Telegram, MCP server, Hermes | |
 | 5–9 | Mapper, operations, adapters, AI hardening, product | |
 
 Details per phase: [replica/architecture.md](replica/architecture.md#build-order-one-phase-at-a-time).
 
-![Home](docs/screenshots/home-desktop.png)
+![A run with every step and its payloads](docs/screenshots/run.png)
 
 ## Run it
 
@@ -38,11 +38,16 @@ Details per phase: [replica/architecture.md](replica/architecture.md#build-order
 
 ```bash
 cp .env.example .env
-# set BETTER_AUTH_SECRET in .env:  openssl rand -hex 32
+# set BETTER_AUTH_SECRET (openssl rand -hex 32) and SECRETS_KEY (openssl rand -base64 32)
 docker compose up --build
 ```
 
-Open http://localhost:3000, create an account and a workspace.
+Open http://localhost:3000, create an account and a workspace. Then:
+
+1. **Connections → New connection**: a REST API with its base URL and credentials. Press **Test**.
+2. **Integrations → New**: pick "On a schedule" or "When called". Start from a template or write the
+   definition, **Save**, set a schedule if needed, **Activate**.
+3. **Run now** (or call the trigger URL with its token) and open the run to see every step.
 
 ### For development
 
@@ -51,9 +56,10 @@ Needs Node 22 and pnpm 10 (`corepack enable`).
 ```bash
 pnpm install
 docker compose up -d postgres minio        # or any Postgres 16
-cp .env.example apps/web/.env.local        # set BETTER_AUTH_SECRET
+cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY
+set -a; . ./.env; set +a
 pnpm db:migrate
-pnpm dev                                   # http://localhost:3000
+pnpm dev                                   # web on :3000 + worker
 ```
 
 ### Checks
@@ -61,16 +67,20 @@ pnpm dev                                   # http://localhost:3000
 ```bash
 pnpm lint          # Biome
 pnpm typecheck
-pnpm test          # unit tests; auth tests need TEST_DATABASE_URL
-pnpm --filter @oicr/web e2e    # Playwright, desktop + mobile
+pnpm test          # unit tests; DB tests need TEST_DATABASE_URL
+pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker
 ```
 
 ## Layout
 
 ```
-apps/web               Next.js 16 app: UI, auth routes, (later) API, triggers, AI chat
+apps/web               Next.js 16 app: UI, auth, trigger endpoint (/t/...), later the AI chat
+apps/worker            runs queued integrations, fires schedules, reaps crashed runs
 packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema for the AI
-packages/db            Drizzle schema, migrations, org-scoped data access
+packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
+packages/adapters      adapter interface + REST adapter, with SSRF protection
+packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
+packages/db            Drizzle schema, migrations, org-scoped data access, secret encryption
 packages/auth          Better Auth config: email/Google sign-in, workspaces, roles
 replica/               recon, feature matrix, architecture, target schema
 ```

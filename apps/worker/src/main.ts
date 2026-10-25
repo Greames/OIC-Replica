@@ -1,0 +1,72 @@
+import { claimDueSchedules, createDb, failStaleInstances } from "@oicr/db";
+import { executeInstance, getQueue, RUN_QUEUE, type RunJob, startRun, stopQueue } from "@oicr/runtime";
+
+// The worker: runs queued instances, fires schedules, and reaps runs whose
+// worker died. Several workers can run side by side; Postgres locks keep each
+// schedule and instance with exactly one of them.
+
+const log = (msg: string, extra: Record<string, unknown> = {}) =>
+  console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...extra }));
+
+const db = createDb();
+const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 4);
+const tickMs = Number(process.env.SCHEDULER_TICK_MS ?? 15_000);
+const staleAfterMs = Number(process.env.STALE_RUN_MINUTES ?? 30) * 60_000;
+const controller = new AbortController();
+
+async function schedulerTick(): Promise<void> {
+  try {
+    for (const due of await claimDueSchedules(db)) {
+      if (due.skipped) {
+        log("schedule skipped: previous run still active", { integration: due.integration.identifier });
+        continue;
+      }
+      const r = await startRun(db, due.integration, {
+        input: { scheduledFor: due.scheduledFor.toISOString() },
+        kind: "schedule",
+      });
+      log("schedule fired", { integration: due.integration.identifier, instance: r.instanceId });
+    }
+  } catch (e) {
+    log("scheduler error", { error: (e as Error).message });
+  }
+}
+
+async function reap(): Promise<void> {
+  try {
+    const n = await failStaleInstances(db, staleAfterMs);
+    if (n > 0) log("marked stale runs failed", { count: n });
+  } catch (e) {
+    log("reaper error", { error: (e as Error).message });
+  }
+}
+
+async function main(): Promise<void> {
+  const boss = await getQueue({ worker: true });
+  await boss.work<RunJob>(RUN_QUEUE, { localConcurrency: concurrency, batchSize: 1 }, async ([job]) => {
+    if (!job) return;
+    const { instance } = await executeInstance(db, job.data.instanceId, { signal: controller.signal });
+    log("run finished", { instance: instance.id, status: instance.status, ms: instance.durationMs });
+  });
+
+  const timers = [setInterval(schedulerTick, tickMs), setInterval(reap, 60_000)];
+  void schedulerTick();
+  void reap();
+  log("worker started", { concurrency, tickMs });
+
+  const shutdown = async (signal: string) => {
+    log("worker stopping", { signal });
+    for (const t of timers) clearInterval(t);
+    await stopQueue();
+    controller.abort();
+    await db.$client.end({ timeout: 5 });
+    process.exit(0);
+  };
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -24,6 +24,8 @@ jobs:
       BETTER_AUTH_SECRET: ci-only-secret-0d9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b
       BETTER_AUTH_URL: http://localhost:3000
       AUTH_RATE_LIMIT: "off"
+      SECRETS_KEY: c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 # CI only
+      ALLOW_PRIVATE_NETWORK: "true"
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
