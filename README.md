@@ -109,7 +109,7 @@ Needs Node 22 and pnpm 10 (`corepack enable`).
 
 ```bash
 pnpm install
-docker compose up -d postgres minio        # or any Postgres 16
+docker compose up -d postgres              # or any Postgres 16
 cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY
 set -a; . ./.env; set +a
 pnpm db:migrate

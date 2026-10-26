@@ -71,7 +71,7 @@ packages/
   ui/             shared components, tokens
 evals/            AI builder eval cases + runner
 replica/          recon, architecture, features (this folder)
-docker-compose.yml  postgres, minio, web, worker, mcp
+docker-compose.yml  postgres, migrate, web, worker (MCP is served by web)
 ```
 
 ## The FlowDoc (sketch, finalised in Phase 0)
