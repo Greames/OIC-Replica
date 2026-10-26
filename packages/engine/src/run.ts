@@ -6,6 +6,7 @@ import {
   type Step,
   templateExpressions,
 } from "@oicr/flow-schema";
+import { ATTR, attrs, backoffDelay, recordError, retryAfterOf, tracer } from "@oicr/platform";
 import jsonata from "jsonata";
 
 /** What one executed step looks like in the activity stream (S22). */
@@ -51,7 +52,12 @@ export interface EngineDeps {
   maxSteps?: number;
   /** Finds a lookup by name for $lookupValue (null: no such lookup). */
   lookup?(name: string): Promise<LookupTable | null>;
+  /** Jitter source for retry waits (tests pass a fixed one). */
+  random?(): number;
 }
+
+/** Longest wait a server's Retry-After can impose on one retry. */
+const MAX_RETRY_AFTER_MS = 10 * 60 * 1000;
 
 export interface RunResult {
   status: "succeeded" | "failed";
@@ -120,7 +126,30 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  * Expressions see $trigger, $vars, $<stepId>, loop items and $fault
  * (see packages/flow-schema/src/schema.ts).
  */
-export async function runFlow(doc: FlowDoc, trigger: unknown, deps: EngineDeps): Promise<RunResult> {
+export function runFlow(doc: FlowDoc, trigger: unknown, deps: EngineDeps): Promise<RunResult> {
+  return tracer().startActiveSpan(
+    "flow run",
+    { attributes: attrs({ "oicr.flow_style": doc.style, "oicr.trigger_type": doc.trigger.type }) },
+    async (span) => {
+      try {
+        const result = await runFlowInner(doc, trigger, deps);
+        span.setAttribute("oicr.steps_executed", result.steps);
+        if (result.status === "failed") {
+          span.setAttribute("oicr.fault_code", result.fault?.code ?? "unknown");
+          recordError(span, undefined, result.fault?.message ?? "The run failed.");
+        }
+        return result;
+      } catch (e) {
+        recordError(span, e);
+        throw e;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}
+
+async function runFlowInner(doc: FlowDoc, trigger: unknown, deps: EngineDeps): Promise<RunResult> {
   const maxSteps = deps.maxSteps ?? 10_000;
   const sleep = deps.sleep ?? defaultSleep;
   const vars: Record<string, unknown> = {};
@@ -187,7 +216,34 @@ export async function runFlow(doc: FlowDoc, trigger: unknown, deps: EngineDeps):
     for (const step of steps) await runStep(step, scope);
   };
 
-  const runStep = async (step: Step, scope: Scope): Promise<void> => {
+  // Every step runs in its own span. Faults mark it failed; stop and return are not errors.
+  const runStep = (step: Step, scope: Scope): Promise<void> =>
+    tracer().startActiveSpan(
+      `step ${step.type}`,
+      {
+        attributes: attrs({
+          [ATTR.step]: step.id,
+          [ATTR.stepType]: step.type,
+          [ATTR.iteration]: scope.iteration,
+          [ATTR.connection]: step.type === "invoke" ? step.connection : undefined,
+        }),
+      },
+      async (span) => {
+        try {
+          await runStepInner(step, scope);
+        } catch (e) {
+          if (e instanceof FaultSignal) {
+            span.setAttribute("oicr.fault_code", e.fault.code);
+            recordError(span, e, e.fault.message);
+          } else if (!(e instanceof StopSignal) && !(e instanceof ReturnSignal)) recordError(span, e);
+          throw e;
+        } finally {
+          span.end();
+        }
+      },
+    );
+
+  const runStepInner = async (step: Step, scope: Scope): Promise<void> => {
     if (deps.signal?.aborted)
       throw new FaultSignal({ code: "aborted", message: "The run was cancelled.", stepId: step.id });
     executed += 1;
@@ -241,7 +297,29 @@ export async function runFlow(doc: FlowDoc, trigger: unknown, deps: EngineDeps):
                   details: { ...(err.details as object), attempts: attempt },
                 });
               }
-              await sleep((step.retry?.backoffSeconds ?? 5) * 1000 * 2 ** (attempt - 1), deps.signal);
+              // Exponential backoff with jitter; a longer Retry-After from the server wins.
+              const backoff = backoffDelay(
+                attempt,
+                {
+                  attempts,
+                  baseDelayMs: (step.retry?.backoffSeconds ?? 5) * 1000,
+                  maxDelayMs: 5 * 60 * 1000,
+                  jitter: "equal",
+                },
+                deps.random,
+              );
+              const wait = Math.max(backoff, Math.min(retryAfterOf(e) ?? 0, MAX_RETRY_AFTER_MS));
+              tracer()
+                .startSpan("retry wait", {
+                  attributes: attrs({
+                    [ATTR.step]: step.id,
+                    [ATTR.attempt]: attempt,
+                    "oicr.wait_ms": wait,
+                    "oicr.error_code": err.code,
+                  }),
+                })
+                .end();
+              await sleep(wait, deps.signal);
             }
           }
           outputs[step.id] = output;

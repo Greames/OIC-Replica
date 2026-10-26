@@ -13,7 +13,8 @@
   "dependencies": {
     "@oicr/db": "workspace:*",
     "@oicr/notify": "workspace:*",
-    "@oicr/runtime": "workspace:*"
+    "@oicr/runtime": "workspace:*",
+    "@oicr/platform": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22",

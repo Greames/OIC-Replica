@@ -1,0 +1,4 @@
+# Shell scripts and Vault config run inside Linux containers: keep LF line
+# endings even on Windows checkouts.
+*.sh text eol=lf
+*.hcl text eol=lf

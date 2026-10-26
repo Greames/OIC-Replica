@@ -28,7 +28,11 @@ export const CONNECTION_ROLES = ["trigger", "invoke", "trigger_invoke"] as const
 export const AUTH_TYPES = ["none", "basic", "api_key", "bearer"] as const;
 export const CONNECTION_STATUSES = ["draft", "configured", "failed"] as const;
 
-/** S14/S16. Non-secret settings in `properties`; secrets encrypted in `secretCiphertext`. */
+/**
+ * S14/S16. Non-secret settings in `properties`. Credentials live in the secret
+ * store (Vault) under tenants/{org}/connection/{id}; `hasSecret` says whether
+ * one is stored. `secretCiphertext` only holds pre-v2 data until it is migrated.
+ */
 export const connections = pgTable(
   "connections",
   {
@@ -43,6 +47,8 @@ export const connections = pgTable(
     role: text("role", { enum: CONNECTION_ROLES }).notNull(),
     properties: jsonb("properties").$type<Record<string, unknown>>().notNull().default({}),
     authType: text("auth_type", { enum: AUTH_TYPES }).notNull().default("none"),
+    hasSecret: boolean("has_secret").notNull().default(false),
+    /** Legacy (pre-v2): moved to the secret store by `migrate`, then emptied. */
     secretCiphertext: bytea("secret_ciphertext"),
     status: text("status", { enum: CONNECTION_STATUSES }).notNull().default("draft"),
     lastTestedAt: timestamp("last_tested_at", { withTimezone: true }),
@@ -82,6 +88,11 @@ export const integrations = pgTable(
     tracingLevel: text("tracing_level", { enum: TRACING_LEVELS }).notNull().default("audit"),
     /** Sample payloads pasted in the mapper, by source ("trigger", a step id). Not part of the definition. */
     samples: jsonb("samples").$type<Record<string, unknown>>().notNull().default({}),
+    /** sha256 of the trigger token; the token itself is shown once and never stored. */
+    triggerTokenHash: text("trigger_token_hash"),
+    /** Last characters of the token, to tell tokens apart in the UI. */
+    triggerTokenHint: text("trigger_token_hint"),
+    /** Legacy (pre-v2): hashed by `migrate`, then emptied. */
     triggerTokenCiphertext: bytea("trigger_token_ciphertext"),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     activatedBy: uuid("activated_by").references(() => users.id, { onDelete: "set null" }),

@@ -16,6 +16,10 @@ every step by hand.
   or through [Hermes Agent](https://github.com/NousResearch/hermes-agent) and
   any other MCP client via the built-in MCP server.
 - **Self-hostable:** `docker compose up`.
+- **Built for multi-tenant production:** customer credentials live in HashiCorp Vault, never in
+  the database; every run, step, connection call and AI turn is traced with OpenTelemetry. See
+  [docs/platform-architecture.md](docs/platform-architecture.md) for where this is going (stream
+  and batch engines, semantic catalog for Oracle, NetSuite and SAP).
 
 ## Status
 
@@ -40,11 +44,13 @@ Details per phase: [replica/architecture.md](replica/architecture.md#build-order
 
 ```bash
 cp .env.example .env
-# set BETTER_AUTH_SECRET (openssl rand -hex 32) and SECRETS_KEY (openssl rand -base64 32)
+# set BETTER_AUTH_SECRET (any long random string, e.g. openssl rand -hex 32)
 docker compose up --build
 ```
 
-Open http://localhost:3000, create an account and a workspace. Then:
+This starts Postgres, a local Vault (initialised and unsealed automatically; credentials are
+stored there), the web app and the worker. Open http://localhost:3000, create an account and a
+workspace. Then:
 
 1. **Connections → New connection**: a REST API with its base URL and credentials. Press **Test**.
 2. **Integrations → New**: pick "On a schedule" or "When called". Start from a template or write the
@@ -110,7 +116,7 @@ Needs Node 22 and pnpm 10 (`corepack enable`).
 ```bash
 pnpm install
 docker compose up -d postgres              # or any Postgres 16
-cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY
+cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY (dev credential store)
 set -a; . ./.env; set +a
 pnpm db:migrate
 pnpm dev                                   # web on :3000 + worker
@@ -121,7 +127,7 @@ pnpm dev                                   # web on :3000 + worker
 ```bash
 pnpm lint          # Biome
 pnpm typecheck
-pnpm test          # unit tests; DB tests need TEST_DATABASE_URL
+pnpm test          # unit tests; DB tests need TEST_DATABASE_URL, real-Vault tests VAULT_TEST_ADDR
 pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker;
                                # the AI builder runs on recorded turns (no API key needed)
 pnpm --filter @oicr/ai eval    # AI builder quality against the configured provider (needs its key;
@@ -138,8 +144,10 @@ packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
 packages/adapters      adapter interface + REST adapter, with SSRF protection
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
 packages/ai            the AI builder: tool-use loop, providers (Gemini, Claude, GPT), tools, prompt, evals
+packages/platform      retry policy (backoff, jitter, Retry-After, deadlines), OpenTelemetry helpers + bootstrap
+packages/vault         secret store: HashiCorp Vault KV v2 (token / AppRole / Kubernetes auth), cache
 packages/notify        sends updates to Slack, Telegram, email and signed webhooks, with retries
-packages/db            Drizzle schema, migrations, org-scoped data access, secret encryption
+packages/db            Drizzle schema, migrations, org-scoped data access, secret store wiring
 packages/auth          Better Auth config: email/Google sign-in, workspaces, roles
 replica/               recon, feature matrix, architecture, target schema
 ```

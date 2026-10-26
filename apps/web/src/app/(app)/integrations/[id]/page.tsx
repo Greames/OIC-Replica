@@ -131,6 +131,7 @@ export default async function IntegrationPage({
             id={id}
             url={`${base}/t/${org.slug}/${integration.identifier}${triggerPath}`}
             method={def.trigger?.method ?? "POST"}
+            hint={integration.triggerTokenHint}
           />
         </Card>
       )}

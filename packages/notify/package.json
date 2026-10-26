@@ -18,7 +18,8 @@
   "dependencies": {
     "@oicr/adapters": "workspace:*",
     "@oicr/db": "workspace:*",
-    "undici": "^8.12.3"
+    "undici": "^8.12.3",
+    "@oicr/platform": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22",

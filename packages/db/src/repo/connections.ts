@@ -3,7 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { connections } from "../schema/runtime.js";
-import { decryptSecret, encryptSecret } from "../secrets.js";
+import { secretStore } from "../secret-store.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { emitEvent } from "./events.js";
 
@@ -27,12 +27,14 @@ export type ConnectionInput = z.input<typeof ConnectionInput>;
 type Row = typeof connections.$inferSelect;
 
 /** What leaves the server: never the secret, only whether one is stored. */
-export type ConnectionView = Omit<Row, "secretCiphertext"> & { hasSecret: boolean };
+export type ConnectionView = Omit<Row, "secretCiphertext">;
 
 function view(row: Row): ConnectionView {
-  const { secretCiphertext, ...rest } = row;
-  return { ...rest, hasSecret: secretCiphertext !== null };
+  const { secretCiphertext: _legacy, ...rest } = row;
+  return rest;
 }
+
+const secretRef = (orgId: string, id: string) => ({ tenant: orgId, kind: "connection" as const, id });
 
 /** "Shop API (prod)" → "shop_api_prod" */
 export function toConnectionIdentifier(name: string): string {
@@ -106,11 +108,20 @@ export async function createConnection(db: Db, actor: Actor, input: ConnectionIn
       role: data.role,
       properties,
       authType: data.authType,
-      secretCiphertext: data.secret ? encryptSecret(data.secret) : null,
+      hasSecret: Boolean(data.secret),
     })
     .onConflictDoNothing({ target: [connections.orgId, connections.identifier] })
     .returning();
   if (!row) throw new ConflictError(`A connection with the identifier ${identifier} already exists.`);
+  if (data.secret) {
+    try {
+      await secretStore(db).put(secretRef(actor.orgId, row.id), data.secret);
+    } catch (e) {
+      // No connection without its credential: undo the row.
+      await db.delete(connections).where(eq(connections.id, row.id));
+      throw e;
+    }
+  }
   return view(row);
 }
 
@@ -123,6 +134,14 @@ export async function updateConnection(
   assertCan(actor, "build");
   const data = ConnectionInput.parse(input);
   const { properties } = checkAdapter(data);
+  const [current] = await db
+    .select({ id: connections.id })
+    .from(connections)
+    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+  if (!current) throw new NotFoundError("Connection");
+  // Write the credential first: the row never claims a secret the store does not have.
+  if (data.secret) await secretStore(db).put(secretRef(actor.orgId, id), data.secret);
+  if (data.secret === null) await secretStore(db).delete(secretRef(actor.orgId, id));
   const [row] = await db
     .update(connections)
     .set({
@@ -131,7 +150,7 @@ export async function updateConnection(
       role: data.role,
       properties,
       authType: data.authType,
-      ...(data.secret !== undefined ? { secretCiphertext: data.secret ? encryptSecret(data.secret) : null } : {}),
+      ...(data.secret !== undefined ? { hasSecret: Boolean(data.secret), secretCiphertext: null } : {}),
       status: "draft",
       lastTestError: null,
     })
@@ -143,6 +162,13 @@ export async function updateConnection(
 
 export async function deleteConnection(db: Db, actor: Actor, id: string): Promise<void> {
   assertCan(actor, "build");
+  const [row] = await db
+    .select({ id: connections.id })
+    .from(connections)
+    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+  if (!row) return;
+  // Credential first: a failure leaves the connection in place to retry, never an orphaned secret.
+  await secretStore(db).delete(secretRef(actor.orgId, id));
   await db.delete(connections).where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
 }
 
@@ -154,7 +180,7 @@ export async function testConnection(db: Db, actor: Actor, id: string): Promise<
     .from(connections)
     .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
   if (!row) throw new NotFoundError("Connection");
-  const result = await getAdapter(row.adapter).test(toConfig(row));
+  const result = await getAdapter(row.adapter).test(await toConfig(db, row));
   await db
     .update(connections)
     .set({
@@ -177,16 +203,16 @@ export async function testConnection(db: Db, actor: Actor, id: string): Promise<
   return result;
 }
 
-function toConfig(row: Row): ConnectionConfig {
+async function toConfig(db: Db, row: Row): Promise<ConnectionConfig> {
   return {
     properties: row.properties,
     authType: row.authType,
-    secret: row.secretCiphertext ? decryptSecret<Record<string, unknown>>(row.secretCiphertext) : null,
+    secret: row.hasSecret ? await secretStore(db).get<Record<string, unknown>>(secretRef(row.orgId, row.id)) : null,
   };
 }
 
 /**
- * For the runtime only: the decrypted config of a connection, by identifier.
+ * For the runtime only: a connection's config with its credential from the secret store.
  * Never pass the result to the browser or the AI builder.
  */
 export async function loadConnectionForRun(db: Db, orgId: string, identifier: string) {
@@ -195,7 +221,7 @@ export async function loadConnectionForRun(db: Db, orgId: string, identifier: st
     .from(connections)
     .where(and(eq(connections.orgId, orgId), eq(connections.identifier, identifier)));
   if (!row) return null;
-  return { adapter: row.adapter, role: row.role, config: toConfig(row) };
+  return { adapter: row.adapter, role: row.role, config: await toConfig(db, row) };
 }
 
 /** Identifier → role/adapter, for validating FlowDocs against what exists. */

@@ -3,10 +3,9 @@
 import {
   activateIntegration,
   createIntegration,
+  createTriggerToken,
   deactivateIntegration,
   getIntegration,
-  getTriggerToken,
-  regenerateTriggerToken,
   saveDefinition,
   setSchedule,
 } from "@oicr/db";
@@ -134,13 +133,13 @@ export async function runNowAction(
   }
 }
 
-export async function revealTokenAction(
-  id: string,
-  regenerate = false,
-): Promise<{ token?: string | null; error?: string }> {
+/** Issues a new trigger token, shown once. */
+export async function createTokenAction(id: string): Promise<{ token?: string; error?: string }> {
   const viewer = await requireViewer();
   try {
-    return { token: regenerate ? await regenerateTriggerToken(db, viewer, id) : await getTriggerToken(db, viewer, id) };
+    const token = await createTriggerToken(db, viewer, id);
+    revalidatePath(`/integrations/${id}`);
+    return { token };
   } catch (e) {
     return { error: toActionError(e).error };
   }

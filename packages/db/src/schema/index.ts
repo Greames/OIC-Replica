@@ -4,3 +4,4 @@ export * from "./core.js";
 export * from "./events.js";
 export * from "./lookups.js";
 export * from "./runtime.js";
+export * from "./secrets.js";

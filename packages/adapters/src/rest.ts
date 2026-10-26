@@ -1,3 +1,4 @@
+import { injectContext, isTransientStatus, parseRetryAfter, recordError, SpanKind, withSpan } from "@oicr/platform";
 import { request as httpRequest } from "undici";
 import { z } from "zod";
 import { assertPublicUrl, dispatcher } from "./network.js";
@@ -107,21 +108,42 @@ async function send(
     }
   }
 
-  const timeout = AbortSignal.timeout(props.timeoutSeconds * 1000);
-  let res: Awaited<ReturnType<typeof httpRequest>>;
-  try {
-    res = await httpRequest(url, {
-      method: method as "GET",
-      headers,
-      body,
-      dispatcher: dispatcher(),
-      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      maxRedirections: 0,
-    } as Parameters<typeof httpRequest>[1]);
-  } catch (e) {
-    throw networkError(e, url, props.timeoutSeconds);
-  }
+  // Trace context goes to third parties only when asked (OTEL_PROPAGATE_OUTBOUND=true).
+  if (process.env.OTEL_PROPAGATE_OUTBOUND === "true") injectContext(headers);
 
+  return withSpan(
+    `HTTP ${method}`,
+    // The query is left out: it may carry keys.
+    {
+      "http.request.method": method,
+      "server.address": url.hostname,
+      "server.port": Number(url.port) || undefined,
+      "url.path": url.pathname,
+    },
+    async (span) => {
+      const timeout = AbortSignal.timeout(props.timeoutSeconds * 1000);
+      let res: Awaited<ReturnType<typeof httpRequest>>;
+      try {
+        res = await httpRequest(url, {
+          method: method as "GET",
+          headers,
+          body,
+          dispatcher: dispatcher(),
+          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          maxRedirections: 0,
+        } as Parameters<typeof httpRequest>[1]);
+      } catch (e) {
+        throw networkError(e, url, props.timeoutSeconds);
+      }
+      span.setAttribute("http.response.status_code", res.statusCode);
+      if (res.statusCode >= 500) recordError(span, undefined, `HTTP ${res.statusCode}`);
+      return readResponse(res);
+    },
+    { kind: SpanKind.CLIENT },
+  );
+}
+
+async function readResponse(res: Awaited<ReturnType<typeof httpRequest>>): Promise<RestResponse> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of res.body) {
@@ -255,7 +277,8 @@ export const rest: Adapter<RestProperties> = {
         `http_${res.status}`,
         `${method} ${path} returned ${res.status}: ${excerpt(res.body)}`,
         { status: res.status, body: res.body },
-        res.status === 429 || res.status >= 500,
+        isTransientStatus(res.status),
+        res.status === 429 || res.status === 503 ? parseRetryAfter(res.headers["retry-after"]) : undefined,
       );
     }
     return res;
