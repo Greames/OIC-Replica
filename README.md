@@ -9,7 +9,7 @@ every step by hand.
 > independent product and is not affiliated with Oracle.
 
 - **AI builder:** say what you want ("every 15 minutes, send new orders from
-  Postgres to our shop API and email me on failure"). Claude asks what it
+  Postgres to our shop API and email me on failure"). The AI asks what it
   needs, builds the flow, and you review the changes before they apply.
 - **Visual canvas and mapper:** see and fine-tune what the AI built.
 - **Every update, everywhere:** live in the app, in Slack, Telegram or email,
@@ -55,7 +55,12 @@ Or skip step 2: on **Home**, describe the integration in plain English ("every 1
 orders from the orders API to the shop and email me if one fails"). The AI builder asks what it
 needs, drafts missing connections (you add the credentials), and shows the integration with a
 step-by-step diff. Nothing is created until you press **Create integration**. On any integration,
-**Edit with AI** changes it by instruction the same way. Needs `ANTHROPIC_API_KEY`.
+**Edit with AI** changes it by instruction the same way.
+
+The AI builder runs on **Gemini** (default), **Claude** or **GPT**. Set `GEMINI_API_KEY`, or
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`; with more than one key, `AI_PROVIDER` picks
+(`gemini`, `anthropic`, `openai`). `GEMINI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL` (or
+`AI_MODEL` for the active one) and `AI_EFFORT` tune it. The chat shows which model is building.
 
 ### Mapping data
 
@@ -119,7 +124,7 @@ pnpm typecheck
 pnpm test          # unit tests; DB tests need TEST_DATABASE_URL
 pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker;
                                # the AI builder runs on recorded turns (no API key needed)
-pnpm --filter @oicr/ai eval    # AI builder quality against real Claude (needs ANTHROPIC_API_KEY;
+pnpm --filter @oicr/ai eval    # AI builder quality against the configured provider (needs its key;
                                # uses real tokens)
 ```
 
@@ -132,7 +137,7 @@ packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema f
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
 packages/adapters      adapter interface + REST adapter, with SSRF protection
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
-packages/ai            the AI builder: Claude tool-use loop, tools, system prompt, evals
+packages/ai            the AI builder: tool-use loop, providers (Gemini, Claude, GPT), tools, prompt, evals
 packages/notify        sends updates to Slack, Telegram, email and signed webhooks, with retries
 packages/db            Drizzle schema, migrations, org-scoped data access, secret encryption
 packages/auth          Better Auth config: email/Google sign-in, workspaces, roles

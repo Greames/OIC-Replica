@@ -1,7 +1,8 @@
 // The AI builder eval: real requests, run against Claude, graded by checks on
 // the proposal. Run before changing the prompt, the tools or the model.
 //
-//   ANTHROPIC_API_KEY=... TEST_DATABASE_URL=postgres://... pnpm --filter @oicr/ai eval [case-id ...]
+//   GEMINI_API_KEY=... TEST_DATABASE_URL=postgres://... pnpm --filter @oicr/ai eval [case-id ...]
+//   (or AI_PROVIDER=anthropic|openai with ANTHROPIC_API_KEY / OPENAI_API_KEY to compare providers)
 //
 // Costs real tokens: every case is one conversation (a few model calls).
 
@@ -21,7 +22,7 @@ import {
 } from "@oicr/db";
 import { runMigrations } from "@oicr/db/migrate";
 import { type FlowDoc, type Step, walkSteps } from "@oicr/flow-schema";
-import { type AiEvent, AnthropicModel, runTurn } from "../src/index.js";
+import { type AiEvent, modelFromEnv, runTurn } from "../src/index.js";
 
 interface Case {
   id: string;
@@ -45,17 +46,20 @@ interface Case {
 }
 
 const url = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
-if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-  console.log("Skipping the AI eval: set ANTHROPIC_API_KEY to run it (it uses real tokens).");
+const model = modelFromEnv();
+if (!model || model.model === "scripted") {
+  console.log(
+    "Skipping the AI eval: set GEMINI_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY (and AI_PROVIDER to choose). It uses real tokens.",
+  );
   process.exit(0);
 }
+console.log(`Evaluating ${model.provider} · ${model.model}`);
 if (!url) throw new Error("Set TEST_DATABASE_URL");
 process.env.SECRETS_KEY ??= randomBytes(32).toString("base64");
 
 const cases: Case[] = JSON.parse(readFileSync(new URL("./cases.json", import.meta.url), "utf8"));
 const only = process.argv.slice(2);
 const db = createDb(url);
-const model = new AnthropicModel();
 
 function check(c: Case, doc: FlowDoc | null, schedule: unknown, asked: number, createdConnections: string[]): string[] {
   const fails: string[] = [];

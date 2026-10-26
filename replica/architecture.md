@@ -42,7 +42,7 @@ renames it before launch.
 | custom JS | isolated-vm | runs user JS libraries with memory/time limits and no network |
 | auth | Better Auth (email + Google, orgs plugin) | self-hostable, owns its tables in our Postgres, has organizations/roles built in |
 | secrets | AES-256-GCM envelope encryption, master key from env or a cloud KMS | credentials never leave the server; never sent to the model |
-| AI | Anthropic Claude via `@anthropic-ai/sdk`, tool use + streaming | strong at tool use and structured output. Default model `claude-opus-5-5` (configurable with `AI_MODEL`, effort with `AI_EFFORT`); a cheaper model is the operator's choice, made after running the eval. Behind a small provider interface so others can be added |
+| AI | Gemini (default, `@google/genai`), Claude (`@anthropic-ai/sdk`) or GPT (`openai`, Responses API), tool use + streaming | one `ModelClient` interface; `AI_PROVIDER` picks, models per provider (`GEMINI_MODEL`, `ANTHROPIC_MODEL`, `OPENAI_MODEL`), effort with `AI_EFFORT`. Compare providers with the eval before switching |
 | agent protocol | MCP server (`@modelcontextprotocol/sdk`, streamable HTTP) | lets Hermes Agent, Claude Desktop, Claude Code or any MCP client drive the platform |
 | realtime | Server-Sent Events from Postgres LISTEN/NOTIFY | live run status and AI progress without a websocket service |
 | payload storage | S3-compatible (Cloudflare R2 / MinIO self-hosted) | payloads up to 1 GB never sit in Postgres |
@@ -433,3 +433,21 @@ Then: should-haves and could-haves by area, then the fixes
   MCP `list_lookups`.
 - **Not yet**: drawn lines between trees (rows show the expression instead), XSLT-style
   conditional/grouping templates, project-scoped lookups, editing schemas field by field.
+
+**AI providers (after Phase 5).** The AI builder runs on Gemini, Claude or GPT:
+
+- One conversation format, stored as before (content blocks: text, thinking, tool_use,
+  tool_result). Each provider (`packages/ai/src/providers/`) translates it to its API and back,
+  so the loop, tools, prompt and evals are shared, and a conversation can even continue on another
+  provider.
+- What a provider needs back on later turns rides on the block as `provider_data`: Gemini's thought
+  signatures (required when replaying function calls; calls from other providers get Gemini's
+  documented placeholder), OpenAI's reasoning items with encrypted content (requests use
+  `store: false`, so nothing is kept at OpenAI). Claude gets other providers' reasoning dropped and
+  the extra fields removed.
+- `AI_PROVIDER` (gemini | anthropic | openai) picks; without it, the first configured key in the
+  order Gemini, Claude, GPT. Defaults: `gemini-4-argon`, `claude-opus-5-5`, `gpt-6-astra`,
+  each overridable. `AI_EFFORT` maps to Gemini's thinking level, Claude's effort and OpenAI's
+  reasoning effort. Errors (bad key, rate limit, 5xx) are reported the same way for all three.
+- Tested per provider: translation both ways, and each SDK end to end against a local mock of its
+  API (streaming, request shape, errors).

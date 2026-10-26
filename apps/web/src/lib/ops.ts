@@ -25,7 +25,7 @@ import {
 } from "@oicr/db";
 import { startRun } from "@oicr/runtime";
 import { z } from "zod";
-import { getModel } from "./ai";
+import { aiHint, getModel } from "./ai";
 import { db } from "./db";
 
 // What scripts and agents can do: the public API (/api/v1) and the MCP server
@@ -245,7 +245,7 @@ export async function opRun(actor: Actor, id: string, input: unknown) {
 /** One turn of the AI builder, collected instead of streamed. */
 async function turn(actor: Actor, sessionId: string, text: string) {
   const model = getModel();
-  if (!model) throw new OpError(503, "ai_disabled", "The AI builder is off: the server has no ANTHROPIC_API_KEY.");
+  if (!model) throw new OpError(503, "ai_disabled", `The AI builder is off. ${aiHint()}`);
   let reply = "";
   let question: { question: string; choices: string[] } | null = null;
   const proposals: { change_id: string; summary: string }[] = [];

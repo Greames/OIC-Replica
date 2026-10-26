@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 
 export type Message = Anthropic.Beta.BetaMessage;
 export type MessageParam = Anthropic.Beta.BetaMessageParam;
@@ -20,62 +20,63 @@ export interface StreamHandlers {
 /** One model call. Implementations stream deltas and resolve with the full message. */
 export interface ModelClient {
   readonly model: string;
+  /** Which service runs it; unset for scripted models. */
+  readonly provider?: ProviderId;
   turn(req: TurnRequest, handlers?: StreamHandlers, signal?: AbortSignal): Promise<Message>;
 }
 
 /** Thrown when a streamed tool input could not be parsed at all; the turn can be re-issued. */
 export class ToolInputParseError extends Error {}
 
-export const DEFAULT_MODEL = "claude-opus-5-5";
+export type ProviderId = "gemini" | "anthropic" | "openai";
 
-/**
- * Claude through the Messages API (beta namespace for server-side fallback).
- * - adaptive thinking (always on for this model), effort "high": building a
- *   correct integration is intelligence-sensitive work
- * - refused requests are retried on a fallback model inside the same call
- * - system prompt + tools are cached; the rolling conversation tail is cached
- *   with top-level automatic caching
- */
-export class AnthropicModel implements ModelClient {
-  readonly model: string;
-  private client: Anthropic;
-  private effort: "low" | "medium" | "high" | "xhigh" | "max";
-
-  constructor(opts: { model?: string; apiKey?: string; effort?: AnthropicModel["effort"] } = {}) {
-    this.model = opts.model || process.env.AI_MODEL || DEFAULT_MODEL;
-    this.effort = opts.effort || (process.env.AI_EFFORT as AnthropicModel["effort"]) || "high";
-    this.client = new Anthropic(opts.apiKey ? { apiKey: opts.apiKey } : {});
-  }
-
-  async turn(req: TurnRequest, handlers: StreamHandlers = {}, signal?: AbortSignal): Promise<Message> {
-    const stream = this.client.beta.messages.stream(
-      {
-        model: this.model,
-        max_tokens: 64000,
-        betas: ["server-side-fallback-2026-07-01"],
-        fallbacks: "default",
-        thinking: { type: "adaptive", display: "summarized" },
-        output_config: { effort: this.effort },
-        cache_control: { type: "ephemeral" },
-        system: req.system,
-        tools: req.tools,
-        messages: req.messages,
-      },
-      { signal },
-    );
-    if (handlers.onText) stream.on("text", (d) => handlers.onText?.(d));
-    if (handlers.onThinking) stream.on("thinking", (d) => handlers.onThinking?.(d));
-    try {
-      return await stream.finalMessage();
-    } catch (err) {
-      // API errors (rate limits, auth, 5xx) are rethrown as-is; only an
-      // unparseable streamed tool input is turned into a retryable error.
-      if (err instanceof Anthropic.APIError) throw err;
-      if (err instanceof Error && /json/i.test(err.message)) throw new ToolInputParseError(err.message);
-      throw err;
-    }
+/** A provider error, so the loop can explain it the same way for every provider. */
+export class ModelError extends Error {
+  constructor(
+    readonly kind: "auth" | "rate_limit" | "api",
+    readonly provider: ProviderId,
+    readonly status: number | undefined,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ModelError";
   }
 }
+
+export function modelErrorFromStatus(provider: ProviderId, status: number | undefined, message: string): ModelError {
+  const kind = status === 401 || status === 403 ? "auth" : status === 429 ? "rate_limit" : "api";
+  return new ModelError(kind, provider, status, message);
+}
+
+/**
+ * Data a provider needs back on a later turn (Gemini thought signatures,
+ * OpenAI reasoning items). Stored on the block; other providers ignore it.
+ */
+export interface ProviderData {
+  gemini?: { thoughtSignature?: string; generatedId?: boolean };
+  openai?: { item?: Record<string, unknown> };
+}
+
+/** Reads a block's provider data, whatever the block type. */
+export const providerData = (block: unknown): ProviderData | undefined =>
+  (block as { provider_data?: ProviderData } | null)?.provider_data;
+
+/** The system prompt as one string, for providers without system blocks. */
+export const systemText = (system: TextBlockParam[]) => system.map((b) => b.text).join("\n\n");
+
+/** The text of a tool result's content (string or text blocks). */
+export function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content))
+    return content
+      .map((c) => (c && typeof c === "object" && "text" in c ? String((c as { text: unknown }).text) : ""))
+      .join("\n");
+  return "";
+}
+
+/** Normalised "effort" for all providers (AI_EFFORT). */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const envEffort = (): Effort => (process.env.AI_EFFORT as Effort) || "high";
 
 /**
  * Plays back recorded assistant turns in order. For tests and offline e2e
@@ -114,15 +115,4 @@ export class ScriptedModel implements ModelClient {
       usage: { input_tokens: 100, output_tokens: 50 },
     } as unknown as Message;
   }
-}
-
-/** The configured model: Claude, or a script for offline runs. Null when not configured. */
-export function modelFromEnv(): ModelClient | null {
-  if (process.env.AI_PROVIDER === "scripted") {
-    const file = process.env.AI_SCRIPT_FILE;
-    if (!file) throw new Error("AI_PROVIDER=scripted needs AI_SCRIPT_FILE");
-    return ScriptedModel.fromFile(file);
-  }
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) return new AnthropicModel();
-  return null;
 }

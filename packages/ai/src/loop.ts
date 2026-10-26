@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import {
   type Actor,
   appendAiMessage,
@@ -13,8 +13,9 @@ import {
 } from "@oicr/db";
 import { eq } from "drizzle-orm";
 import type { Message, MessageParam, ModelClient } from "./model.js";
-import { ToolInputParseError } from "./model.js";
+import { ModelError, ToolInputParseError } from "./model.js";
 import { contextPreamble, systemPrompt } from "./prompt.js";
+import { PROVIDERS } from "./providers/index.js";
 import { type AiEvent, ASK_USER, parseAskUser, runTool, TOOLS, type ToolContext } from "./tools.js";
 
 export interface TurnOptions {
@@ -204,13 +205,14 @@ export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "
       error: "The AI took too many steps on this message. Send it again, or ask for a smaller change.",
     });
   } catch (e) {
+    const p = e instanceof ModelError ? PROVIDERS[e.provider] : null;
     const message =
-      e instanceof Anthropic.AuthenticationError
-        ? "The AI service rejected the API key. Check ANTHROPIC_API_KEY."
-        : e instanceof Anthropic.RateLimitError
-          ? "The AI service is busy (rate limited). Try again in a minute."
-          : e instanceof Anthropic.APIError
-            ? `The AI service returned an error (${e.status}). Try again.`
+      e instanceof ModelError && e.kind === "auth"
+        ? `${p!.name} rejected the API key. Check ${p!.keyEnv[0]}.`
+        : e instanceof ModelError && e.kind === "rate_limit"
+          ? `${p!.name} is busy (rate limited). Try again in a minute.`
+          : e instanceof ModelError
+            ? `${p!.name} returned an error${e.status ? ` (${e.status})` : ""}. Try again.`
             : `Something went wrong: ${(e as Error).message}`;
     return await finish("error", { error: message });
   }
