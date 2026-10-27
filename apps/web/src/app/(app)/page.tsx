@@ -3,7 +3,7 @@ import { ArrowRight, FolderKanban, MessageSquare, Sparkles } from "lucide-react"
 import Link from "next/link";
 import { BuildWithAi } from "@/components/build-with-ai";
 import { Card, PageHeader } from "@/components/ui/card";
-import { aiEnabled } from "@/lib/ai";
+import { aiEnabled, aiHint } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { requireViewer } from "@/lib/session";
 
@@ -46,9 +46,7 @@ export default async function HomePage() {
               ) : (
                 <BuildWithAi projects={allProjects.map((p) => ({ id: p.id, name: p.name }))} enabled={enabled} />
               )}
-              {!enabled && (
-                <p className="mt-3 text-sm text-fg-muted">The AI builder needs ANTHROPIC_API_KEY on the server.</p>
-              )}
+              {!enabled && <p className="mt-3 text-sm text-fg-muted">The AI builder is off. {aiHint()}</p>}
             </div>
           </div>
         </Card>

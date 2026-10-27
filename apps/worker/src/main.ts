@@ -7,14 +7,21 @@ import {
   recoverStuckAiSessions,
 } from "@oicr/db";
 import { deliverDue } from "@oicr/notify";
+import { ATTR, currentTraceId, extractContext, SpanKind, withSpan } from "@oicr/platform";
+import { startTelemetry } from "@oicr/platform/otel";
 import { executeInstance, getQueue, RUN_QUEUE, type RunJob, startRun, stopQueue } from "@oicr/runtime";
 
 // The worker: runs queued instances, fires schedules, and reaps runs whose
 // worker died. Several workers can run side by side; Postgres locks keep each
 // schedule and instance with exactly one of them.
 
-const log = (msg: string, extra: Record<string, unknown> = {}) =>
-  console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...extra }));
+// Traces go to OTEL_EXPORTER_OTLP_ENDPOINT when set; off otherwise.
+const telemetry = startTelemetry({ serviceName: "oicr-worker" });
+
+const log = (msg: string, extra: Record<string, unknown> = {}) => {
+  const trace = currentTraceId();
+  console.log(JSON.stringify({ at: new Date().toISOString(), msg, ...extra, ...(trace ? { trace } : {}) }));
+};
 
 const db = createDb();
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 4);
@@ -64,11 +71,24 @@ async function schedulerTick(): Promise<void> {
         });
         continue;
       }
-      const r = await startRun(db, due.integration, {
-        input: { scheduledFor: due.scheduledFor.toISOString() },
-        kind: "schedule",
-      });
-      log("schedule fired", { integration: due.integration.identifier, instance: r.instanceId });
+      // Each fired schedule starts a trace that the run continues in whichever worker takes it.
+      await withSpan(
+        "schedule fire",
+        {
+          [ATTR.tenant]: due.integration.orgId,
+          [ATTR.integration]: due.integration.id,
+          [ATTR.integrationVersion]: due.integration.version,
+        },
+        async (span) => {
+          const r = await startRun(db, due.integration, {
+            input: { scheduledFor: due.scheduledFor.toISOString() },
+            kind: "schedule",
+          });
+          span.setAttribute(ATTR.run, r.instanceId);
+          log("schedule fired", { integration: due.integration.identifier, instance: r.instanceId });
+        },
+        { kind: SpanKind.PRODUCER },
+      );
     }
   } catch (e) {
     log("scheduler error", { error: (e as Error).message });
@@ -91,7 +111,10 @@ async function main(): Promise<void> {
   const boss = await getQueue({ worker: true });
   await boss.work<RunJob>(RUN_QUEUE, { localConcurrency: concurrency, batchSize: 1 }, async ([job]) => {
     if (!job) return;
-    const { instance } = await executeInstance(db, job.data.instanceId, { signal: controller.signal });
+    const { instance } = await executeInstance(db, job.data.instanceId, {
+      signal: controller.signal,
+      parent: extractContext(job.data.trace),
+    });
     log("run finished", { instance: instance.id, status: instance.status, ms: instance.durationMs });
   });
 
@@ -100,13 +123,14 @@ async function main(): Promise<void> {
   void schedulerTick();
   void reap();
   void deliver();
-  log("worker started", { concurrency, tickMs });
+  log("worker started", { concurrency, tickMs, tracing: telemetry ? "on" : "off" });
 
   const shutdown = async (signal: string) => {
     log("worker stopping", { signal });
     for (const t of timers) clearInterval(t);
     await stopQueue();
     controller.abort();
+    await telemetry?.shutdown().catch(() => {});
     await db.$client.end({ timeout: 5 });
     process.exit(0);
   };

@@ -1,7 +1,7 @@
 import { type AiEvent, runTurn } from "@oicr/ai";
 import { ConflictError } from "@oicr/db";
 import { z } from "zod";
-import { getModel } from "@/lib/ai";
+import { aiHint, getModel } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
@@ -22,10 +22,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const viewer = await requireViewer();
   const model = getModel();
   if (!model)
-    return Response.json(
-      { error: "ai_disabled", message: "Set ANTHROPIC_API_KEY to use the AI builder." },
-      { status: 503 },
-    );
+    return Response.json({ error: "ai_disabled", message: `The AI builder is off. ${aiHint()}` }, { status: 503 });
   const body = Body.safeParse(await req.json().catch(() => ({})));
   if (!body.success) return Response.json({ error: "invalid", message: "Write a message first." }, { status: 400 });
 

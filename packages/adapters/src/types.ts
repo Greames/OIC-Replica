@@ -60,6 +60,8 @@ export class AdapterError extends Error {
     public details?: Record<string, unknown>,
     /** true when retrying could help (timeouts, 5xx, 429). */
     public retryable = false,
+    /** The wait the server asked for (Retry-After), if any. */
+    public retryAfterMs?: number,
   ) {
     super(message);
     this.name = "AdapterError";

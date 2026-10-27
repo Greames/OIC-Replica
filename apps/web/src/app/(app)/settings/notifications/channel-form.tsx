@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FieldError, Input, Label } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -25,6 +25,10 @@ export function ChannelForm({
 }) {
   const [state, action, pending] = useActionState<ActionResult, FormData>(createChannelAction, {});
   const [kind, setKind] = useState(defaultKind);
+  // A successful submit resets the form's fields; keep the chosen kind in step with them.
+  useEffect(() => {
+    if (state.ok) setKind(defaultKind);
+  }, [state, defaultKind]);
   const err = (k: string) => state.fieldErrors?.[`config.${k}`] ?? state.fieldErrors?.[k];
   return (
     <form action={action} className="grid gap-4 sm:grid-cols-2">

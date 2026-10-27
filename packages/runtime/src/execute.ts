@@ -8,16 +8,21 @@ import {
   instances,
   integrations,
   loadConnectionForRun,
+  loadLookup,
   PAYLOAD_LIMITS,
   startInstance,
 } from "@oicr/db";
 import { type EngineDeps, type RunResult, runFlow } from "@oicr/engine";
 import { FlowDoc } from "@oicr/flow-schema";
+import { ATTR, activeContext, type Context, recordError, SpanKind, tracer } from "@oicr/platform";
+import { SecretStoreError } from "@oicr/vault";
 import { eq } from "drizzle-orm";
 import { emailNotifier } from "./email.js";
 
 export interface ExecuteOptions {
   signal?: AbortSignal;
+  /** Trace context to continue (from the queued job or the HTTP request). */
+  parent?: Context;
   /** Overrides for tests. */
   deps?: Partial<EngineDeps>;
 }
@@ -32,7 +37,35 @@ export interface ExecuteResult {
  * the engine, writes every step as it happens, and records the outcome.
  * Returns null result if another worker had already claimed it.
  */
-export async function executeInstance(db: Db, instanceId: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+export function executeInstance(db: Db, instanceId: string, opts: ExecuteOptions = {}): Promise<ExecuteResult> {
+  return tracer().startActiveSpan(
+    "integration execute",
+    { kind: SpanKind.CONSUMER, attributes: { [ATTR.run]: instanceId } },
+    opts.parent ?? activeContext(),
+    async (span) => {
+      try {
+        const out = await executeInner(db, instanceId, opts);
+        const i = out.instance;
+        span.setAttributes({
+          [ATTR.tenant]: i.orgId,
+          [ATTR.integration]: i.integrationId,
+          [ATTR.integrationVersion]: i.integrationVersion,
+          [ATTR.trigger]: i.triggerKind,
+          "oicr.run_status": i.status,
+        });
+        if (i.status === "failed") recordError(span, undefined, i.errorMessage ?? "The run failed.");
+        return out;
+      } catch (e) {
+        recordError(span, e);
+        throw e;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}
+
+async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): Promise<ExecuteResult> {
   const instance = await startInstance(db, instanceId);
   if (!instance) {
     const [current] = await db.select().from(instances).where(eq(instances.id, instanceId));
@@ -71,14 +104,23 @@ export async function executeInstance(db: Db, instanceId: string, opts: ExecuteO
   const deps: EngineDeps = {
     signal: opts.signal,
     notify: emailNotifier(),
+    lookup: (name) => loadLookup(db, instance.orgId, name),
     async invoke(call) {
       let conn: Awaited<ReturnType<typeof loadConnectionForRun>>;
       try {
         conn = await loadConnectionForRun(db, instance.orgId, call.connection);
-      } catch {
+      } catch (e) {
+        // The secret store being down is worth retrying; a refusal or bad config is not.
+        if (e instanceof SecretStoreError && e.kind === "unavailable")
+          throw new AdapterError(
+            "secret_store_unavailable",
+            `The credentials of connection "${call.connection}" could not be read: the secret store is not reachable. Retry later.`,
+            undefined,
+            true,
+          );
         throw new AdapterError(
           "secret_unreadable",
-          `The credentials of connection "${call.connection}" could not be decrypted. If SECRETS_KEY changed, enter them again on the connection.`,
+          `The credentials of connection "${call.connection}" could not be read (${(e as Error).message}). Check the secret store, or enter them again on the connection.`,
         );
       }
       if (!conn) throw new AdapterError("connection_missing", `Connection "${call.connection}" no longer exists.`);

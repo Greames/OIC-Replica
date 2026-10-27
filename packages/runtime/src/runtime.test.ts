@@ -5,25 +5,40 @@ import {
   type Actor,
   activateIntegration,
   claimDueSchedules,
+  connections,
   createConnection,
   createDb,
+  createInstance,
   createIntegration,
+  createLookup,
   createProject,
+  createTriggerToken,
+  deleteLookup,
+  encryptSecret,
   failStaleInstances,
+  findActiveTrigger,
   getInstance,
-  getTriggerToken,
+  getSamples,
   instances,
+  integrations,
   listInstances,
   memberships,
+  moveLegacySecrets,
+  notificationChannels,
   orgs,
   saveDefinition,
   schedules,
+  secretStore,
+  setSample,
   setSchedule,
   testConnection,
+  updateLookup,
   users,
+  useSecretStore,
+  verifyTriggerToken,
 } from "@oicr/db";
 import { runMigrations } from "@oicr/db/migrate";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeInstance, startRun } from "./index.js";
 
@@ -31,6 +46,13 @@ const url = process.env.TEST_DATABASE_URL;
 const db = url ? createDb(url) : null;
 
 describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
+  const createInstanceFor = async (integration: {
+    id: string;
+    orgId: string;
+    version: string;
+    definitionHash: string;
+  }) =>
+    (await createInstance(db!, { orgId: integration.orgId, integration, triggerKind: "manual", input: {} })).instance;
   let server: Server;
   let base: string;
   const received: unknown[] = [];
@@ -103,6 +125,9 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     });
     expect(c.hasSecret).toBe(true);
     expect(JSON.stringify(c)).not.toContain("k-123");
+    // The credential is not in the connections table at all.
+    const [raw] = await db!.execute<{ row: string }>(sql`select c::text as row from connections c where id = ${c.id}`);
+    expect(raw!.row).not.toContain("k-123");
     expect(await testConnection(db!, actor, c.id)).toMatchObject({ ok: true });
 
     const bad = await createConnection(db!, actor, {
@@ -239,7 +264,15 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
       },
     });
     const active = await activateIntegration(db!, actor, integ.id, { tracingLevel: "production" });
-    expect(await getTriggerToken(db!, actor, integ.id)).toMatch(/^oicr_t_/);
+    // Tokens are issued once and kept only as a hash.
+    const token = await createTriggerToken(db!, actor, integ.id);
+    expect(token).toMatch(/^oicr_t_/);
+    const [org] = await db!.select({ slug: orgs.slug }).from(orgs).where(eq(orgs.id, actor.orgId));
+    const found = await findActiveTrigger(db!, org!.slug, active.identifier);
+    expect(found?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(found)).not.toContain(token);
+    expect(verifyTriggerToken(token, found!.tokenHash)).toBe(true);
+    expect(verifyTriggerToken(`${token}x`, found!.tokenHash)).toBe(false);
 
     const r1 = await startRun(db!, active, {
       input: { name: "Ada" },
@@ -261,27 +294,52 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(detail.steps[0]?.output).toBeNull();
   });
 
-  it("explains credentials that can no longer be decrypted", async () => {
+  it("explains when credentials cannot be read, retrying only when the store is down", async () => {
+    const { SecretStoreError, memoryStore } = await import("@oicr/vault");
     const integ = await createIntegration(db!, actor, {
       projectId,
-      name: "Key rotation",
+      name: "Store outage",
       style: "application",
       definition: {
         schemaVersion: 1,
         style: "application",
         trigger: { id: "t", type: "http", sync: true },
-        steps: [{ id: "get", type: "invoke", connection: "mock_api", operation: "GET /orders" }],
+        steps: [
+          {
+            id: "get",
+            type: "invoke",
+            connection: "mock_api",
+            operation: "GET /orders",
+            retry: { attempts: 2, backoffSeconds: 1 },
+          },
+        ],
       },
     });
     const active = await activateIntegration(db!, actor, integ.id);
-    const original = process.env.SECRETS_KEY;
-    process.env.SECRETS_KEY = randomBytes(32).toString("base64");
+    const real = secretStore(db!);
+    const failing = (kind: "unavailable" | "forbidden") => ({
+      ...memoryStore(),
+      backend: "failing",
+      get: async () => {
+        throw new SecretStoreError(
+          kind,
+          kind === "unavailable" ? "Vault is unreachable: ECONNREFUSED" : "Vault denied access.",
+        );
+      },
+    });
     try {
-      const r = await startRun(db!, active, { input: {}, kind: "manual", sync: true });
-      expect(r.error?.code).toBe("secret_unreadable");
-      expect(r.error?.message).toContain("enter them again");
+      useSecretStore(db!, failing("unavailable"));
+      const down = await executeInstance(db!, (await createInstanceFor(active)).id, {
+        deps: { sleep: async () => {} },
+      });
+      expect(down.instance.errorCode).toBe("secret_store_unavailable");
+      expect(down.result?.fault?.details).toMatchObject({ attempts: 2 });
+      useSecretStore(db!, failing("forbidden"));
+      const denied = await startRun(db!, active, { input: {}, kind: "manual", sync: true });
+      expect(denied.error?.code).toBe("secret_unreadable");
+      expect(denied.error?.message).toContain("Vault denied access");
     } finally {
-      process.env.SECRETS_KEY = original;
+      useSecretStore(db!, real);
     }
   });
 
@@ -297,5 +355,135 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(await failStaleInstances(db!, 600_000)).toBeGreaterThanOrEqual(1);
     const [after] = await db!.select().from(instances).where(eq(instances.id, row!.id));
     expect(after?.errorCode).toBe("worker_lost");
+  });
+  it("translates with lookups at run time, guards lookups in use, and gives the mapper samples", async () => {
+    await expect(
+      createLookup(db!, actor, {
+        name: "codes",
+        domains: ["shop", "erp"],
+        rows: [
+          ["A", "1"],
+          ["A", "2"],
+        ],
+      }),
+    ).rejects.toThrow(/is in shop twice \(rows 1 and 2\)/);
+    await expect(createLookup(db!, actor, { name: "codes", domains: ["shop"], rows: [] })).rejects.toThrow(
+      /at least two/,
+    );
+    const lookup = await createLookup(db!, actor, {
+      name: "codes",
+      domains: ["shop", "erp"],
+      rows: [
+        ["A1", "ERP-1", "extra"],
+        ["", ""],
+        ["A2", "ERP-2"],
+      ],
+    });
+    expect(lookup.rows).toEqual([
+      ["A1", "ERP-1"],
+      ["A2", "ERP-2"],
+    ]);
+    await expect(createLookup(db!, actor, { name: "codes", domains: ["a", "b"], rows: [] })).rejects.toThrow(
+      /already exists/,
+    );
+
+    const integ = await createIntegration(db!, actor, { projectId, name: "Lookup run", style: "application" });
+    const definition = {
+      schemaVersion: 1,
+      style: "application",
+      trigger: { id: "t", type: "http", sync: true },
+      steps: [
+        { id: "get", type: "invoke", connection: "mock_api", operation: "GET /orders" },
+        {
+          id: "m",
+          type: "map",
+          expression: '{ "erp": $lookupValue("codes", "shop", $get.body.orders.id, "erp", "?") }',
+        },
+        { id: "r", type: "return", body: "$m" },
+      ],
+    };
+    const bad = await saveDefinition(
+      db!,
+      actor,
+      integ.id,
+      { ...definition, steps: [{ id: "m", type: "map", expression: '$lookupValue("nope", "a", 1, "b")' }] },
+      integ.definitionHash,
+    );
+    expect(bad.errors.map((e) => e.code)).toContain("unknown_lookup");
+    const saved = await saveDefinition(db!, actor, integ.id, definition, bad.integration.definitionHash);
+    expect(saved.errors).toEqual([]);
+    const active = await activateIntegration(db!, actor, integ.id);
+    const run = await startRun(db!, active, { input: { hello: "world" }, kind: "manual", sync: true });
+    expect(run.response?.body).toEqual({ erp: ["ERP-1", "ERP-2"] });
+
+    await expect(deleteLookup(db!, actor, lookup.id)).rejects.toThrow(/used by active integration/);
+    await expect(
+      updateLookup(db!, actor, lookup.id, { name: "renamed", domains: ["shop", "erp"], rows: [] }),
+    ).rejects.toThrow(/Renaming it would break/);
+    await updateLookup(db!, actor, lookup.id, { name: "codes", domains: ["shop", "erp"], rows: [["A1", "X"]] });
+
+    const samples = await getSamples(db!, actor, integ.id);
+    expect(samples.run.trigger).toEqual({ hello: "world" });
+    expect(samples.run.steps.m).toEqual({ erp: ["ERP-1", "ERP-2"] });
+    await setSample(db!, actor, integ.id, "get", { body: { orders: [] } });
+    expect((await getSamples(db!, actor, integ.id)).pasted).toEqual({ get: { body: { orders: [] } } });
+    await setSample(db!, actor, integ.id, "get", null);
+    expect((await getSamples(db!, actor, integ.id)).pasted).toEqual({});
+  });
+  it("moves pre-v2 credentials out of the database, and can be run again", async () => {
+    const { memoryStore } = await import("@oicr/vault");
+    const store = memoryStore();
+    const [legacy] = await db!
+      .insert(connections)
+      .values({
+        orgId: actor.orgId,
+        name: "Old",
+        identifier: `old_${Date.now()}`,
+        adapter: "rest",
+        role: "invoke",
+        properties: { baseUrl: base },
+        authType: "api_key",
+        secretCiphertext: encryptSecret({ apiKey: "old-key" }),
+      })
+      .returning();
+    const [chan] = await db!
+      .insert(notificationChannels)
+      .values({
+        orgId: actor.orgId,
+        kind: "webhook",
+        name: "Old hook",
+        configCiphertext: encryptSecret({ url: "https://hooks.example.com/x", secret: "s".repeat(20) }),
+      })
+      .returning();
+    const integ = await createIntegration(db!, actor, {
+      projectId,
+      name: `Legacy ${Date.now()}`,
+      style: "application",
+    });
+    await db!
+      .update(integrations)
+      .set({ triggerTokenCiphertext: encryptSecret("oicr_t_legacytoken1234") })
+      .where(eq(integrations.id, integ.id));
+
+    const r = await moveLegacySecrets(db!, store);
+    // Rows left by earlier test runs were encrypted with other keys: kept, reported as permanent.
+    expect(r.failed.every((f) => f.permanent)).toBe(true);
+    expect(r.connections).toBeGreaterThanOrEqual(1);
+    expect(await store.get({ tenant: actor.orgId, kind: "connection", id: legacy!.id })).toEqual({ apiKey: "old-key" });
+    expect(await store.get({ tenant: actor.orgId, kind: "channel", id: chan!.id })).toMatchObject({
+      url: "https://hooks.example.com/x",
+    });
+    const [c] = await db!.select().from(connections).where(eq(connections.id, legacy!.id));
+    expect(c).toMatchObject({ secretCiphertext: null, hasSecret: true });
+    const [ch] = await db!.select().from(notificationChannels).where(eq(notificationChannels.id, chan!.id));
+    expect(ch).toMatchObject({ configCiphertext: null, target: "https://hooks.example.com/x" });
+    const [i] = await db!.select().from(integrations).where(eq(integrations.id, integ.id));
+    expect(i!.triggerTokenCiphertext).toBeNull();
+    expect(verifyTriggerToken("oicr_t_legacytoken1234", i!.triggerTokenHash)).toBe(true);
+    expect(i!.triggerTokenHint).toBe("1234");
+
+    expect(await moveLegacySecrets(db!, store)).toMatchObject({ connections: 0, channels: 0, triggerTokens: 0 });
+    const undecryptable = await moveLegacySecrets(db!, store);
+    expect(undecryptable.failed.map((f) => f.id)).not.toContain(legacy!.id);
   });
 });

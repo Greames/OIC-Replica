@@ -1,13 +1,13 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { nextRunAfter, ScheduleInput } from "../schedule.js";
 import { orgs } from "../schema/auth.js";
 import { projects } from "../schema/core.js";
-import { integrations, schedules } from "../schema/runtime.js";
-import { decryptSecret, encryptSecret } from "../secrets.js";
+import { lookups } from "../schema/lookups.js";
+import { instanceSteps, instances, integrations, schedules } from "../schema/runtime.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { connectionIndex } from "./connections.js";
 import { emitEvent } from "./events.js";
@@ -38,7 +38,11 @@ export class InvalidStateError extends Error {
 
 /** Validates against the org's real connections; empty flows stay drafts. */
 async function check(db: Db, orgId: string, definition: unknown) {
-  const result = validateFlow(definition, { connections: await connectionIndex(db, orgId) });
+  const [connections, lookupRows] = await Promise.all([
+    connectionIndex(db, orgId),
+    db.select({ name: lookups.name }).from(lookups).where(eq(lookups.orgId, orgId)),
+  ]);
+  const result = validateFlow(definition, { connections, lookups: lookupRows.map((l) => l.name) });
   const doc = result.doc ?? (definition as FlowDoc);
   const hasSteps = Array.isArray((definition as FlowDoc)?.steps) && (definition as FlowDoc).steps.length > 0;
   return {
@@ -214,8 +218,6 @@ export async function activateIntegration(
   if (current.style === "scheduled" && !current.schedule)
     throw new InvalidStateError("Set a schedule before activating.");
 
-  const token =
-    current.style === "application" && !current.triggerTokenCiphertext ? encryptSecret(newTriggerToken()) : undefined;
   const [row] = await db
     .update(integrations)
     .set({
@@ -223,7 +225,6 @@ export async function activateIntegration(
       activatedAt: new Date(),
       activatedBy: actor.userId,
       tracingLevel: opts.tracingLevel ?? current.tracingLevel,
-      ...(token ? { triggerTokenCiphertext: token } : {}),
     })
     .where(eq(integrations.id, id))
     .returning();
@@ -258,25 +259,29 @@ export async function deactivateIntegration(db: Db, actor: Actor, id: string): P
   return row!;
 }
 
-function newTriggerToken(): string {
-  return `oicr_t_${randomBytes(24).toString("base64url")}`;
+export const hashTriggerToken = (token: string) => createHash("sha256").update(token).digest("hex");
+
+/** Constant-time check of a presented token against the stored hash. */
+export function verifyTriggerToken(presented: string, hash: string | null): boolean {
+  if (!hash || !presented) return false;
+  const a = Buffer.from(hashTriggerToken(presented), "hex");
+  const b = Buffer.from(hash, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** The token callers send as `Authorization: Bearer ...` to the trigger URL. */
-export async function getTriggerToken(db: Db, actor: Actor, id: string): Promise<string | null> {
-  assertCan(actor, "build");
-  const current = await getIntegration(db, actor, id);
-  return current.triggerTokenCiphertext ? decryptSecret<string>(current.triggerTokenCiphertext) : null;
-}
-
-export async function regenerateTriggerToken(db: Db, actor: Actor, id: string): Promise<string> {
+/**
+ * Issues a new token for the trigger URL (callers send it as
+ * `Authorization: Bearer ...`). Only its hash is kept, so it is returned
+ * once; issuing another replaces it.
+ */
+export async function createTriggerToken(db: Db, actor: Actor, id: string): Promise<string> {
   assertCan(actor, "operate");
   await getIntegration(db, actor, id);
-  const token = newTriggerToken();
+  const token = `oicr_t_${randomBytes(24).toString("base64url")}`;
   await db
     .update(integrations)
-    .set({ triggerTokenCiphertext: encryptSecret(token) })
-    .where(eq(integrations.id, id));
+    .set({ triggerTokenHash: hashTriggerToken(token), triggerTokenHint: token.slice(-4), triggerTokenCiphertext: null })
+    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
   return token;
 }
 
@@ -288,8 +293,64 @@ export async function findActiveTrigger(db: Db, orgSlug: string, identifier: str
     .innerJoin(orgs, eq(orgs.id, integrations.orgId))
     .where(and(eq(orgs.slug, orgSlug), eq(integrations.identifier, identifier), eq(integrations.status, "active")));
   if (!row) return null;
-  const token = row.integration.triggerTokenCiphertext
-    ? decryptSecret<string>(row.integration.triggerTokenCiphertext)
-    : null;
-  return { integration: row.integration, token };
+  return { integration: row.integration, tokenHash: row.integration.triggerTokenHash };
+}
+
+export interface Samples {
+  /** Pasted in the mapper, by source: "trigger" or a step id. */
+  pasted: Record<string, unknown>;
+  /** From recent runs: the trigger input and each step's first recorded output. */
+  run: { trigger?: unknown; steps: Record<string, unknown>; runId?: string };
+}
+
+/** Sample data for the mapper. Production tracing keeps no payloads, so runs may give none. */
+export async function getSamples(db: Db, actor: Actor, id: string): Promise<Samples> {
+  const integration = await getIntegration(db, actor, id);
+  const recent = await db
+    .select({ id: instances.id, input: instances.input })
+    .from(instances)
+    .where(and(eq(instances.orgId, actor.orgId), eq(instances.integrationId, id)))
+    .orderBy(desc(instances.createdAt))
+    .limit(5);
+  const run: Samples["run"] = { steps: {} };
+  const withInput = recent.find((r) => r.input !== null && r.input !== undefined);
+  if (withInput) {
+    run.trigger = withInput.input;
+    run.runId = withInput.id;
+  }
+  if (recent.length) {
+    const steps = await db
+      .select({ instanceId: instanceSteps.instanceId, stepId: instanceSteps.stepId, output: instanceSteps.output })
+      .from(instanceSteps)
+      .where(
+        and(
+          inArray(
+            instanceSteps.instanceId,
+            recent.map((r) => r.id),
+          ),
+          isNotNull(instanceSteps.output),
+        ),
+      )
+      .orderBy(instanceSteps.seq);
+    // Newest run first, then the first record of each step (first loop iteration).
+    for (const r of recent)
+      for (const s of steps) if (s.instanceId === r.id && !(s.stepId in run.steps)) run.steps[s.stepId] = s.output;
+  }
+  return { pasted: integration.samples ?? {}, run };
+}
+
+/** Saves (or with null, removes) a pasted sample. Does not change the definition. */
+export async function setSample(db: Db, actor: Actor, id: string, source: string, value: unknown): Promise<void> {
+  assertCan(actor, "build");
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(source)) throw new ConflictError("Not a valid source name.");
+  if (JSON.stringify(value ?? null).length > 256_000)
+    throw new ConflictError("That sample is too large (256 KB at most).");
+  const current = await getIntegration(db, actor, id);
+  const samples = { ...(current.samples ?? {}) };
+  if (value === null || value === undefined) delete samples[source];
+  else samples[source] = value;
+  await db
+    .update(integrations)
+    .set({ samples })
+    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
 }

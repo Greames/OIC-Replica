@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import {
   type Actor,
   appendAiMessage,
@@ -11,10 +11,12 @@ import {
   projects,
   releaseAiSession,
 } from "@oicr/db";
+import { ATTR, recordError, SpanKind, withSpan } from "@oicr/platform";
 import { eq } from "drizzle-orm";
 import type { Message, MessageParam, ModelClient } from "./model.js";
-import { ToolInputParseError } from "./model.js";
+import { ModelError, ToolInputParseError } from "./model.js";
 import { contextPreamble, systemPrompt } from "./prompt.js";
+import { PROVIDERS } from "./providers/index.js";
 import { type AiEvent, ASK_USER, parseAskUser, runTool, TOOLS, type ToolContext } from "./tools.js";
 
 export interface TurnOptions {
@@ -39,7 +41,25 @@ type ToolResult = Anthropic.Beta.BetaToolResultBlockParam;
  * the model and its tools until it ends its turn, asks a question (pauses),
  * or hits a limit. Every message is persisted as it happens, append-only.
  */
-export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "error"> {
+export function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "error"> {
+  return withSpan(
+    "ai message",
+    {
+      [ATTR.tenant]: opts.actor.orgId,
+      "oicr.ai_session_id": opts.sessionId,
+      [ATTR.aiProvider]: opts.model.provider ?? "scripted",
+      [ATTR.aiModel]: opts.model.model,
+    },
+    async (span) => {
+      const status = await runTurnInner(opts);
+      span.setAttribute("oicr.ai_status", status);
+      if (status === "error") recordError(span, undefined, "The AI turn ended with an error.");
+      return status;
+    },
+  );
+}
+
+async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "error"> {
   const { db, actor, sessionId, model, emit } = opts;
   const maxIterations = opts.maxIterations ?? Number(process.env.AI_MAX_ITERATIONS ?? 12);
   const tokenLimit = opts.tokenLimit ?? Number(process.env.AI_SESSION_TOKEN_LIMIT ?? 3_000_000);
@@ -102,13 +122,26 @@ export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "
 
       let message: Message;
       try {
-        message = await model.turn(
-          { system: systemPrompt(), tools: TOOLS, messages: history },
-          {
-            onText: (delta) => emit({ type: "text", delta }),
-            onThinking: (delta) => emit({ type: "thinking", delta }),
+        message = await withSpan(
+          "ai model turn",
+          { [ATTR.aiProvider]: model.provider ?? "scripted", [ATTR.aiModel]: model.model, "oicr.ai_iteration": i },
+          async (span) => {
+            const m = await model.turn(
+              { system: systemPrompt(), tools: TOOLS, messages: history },
+              {
+                onText: (delta) => emit({ type: "text", delta }),
+                onThinking: (delta) => emit({ type: "thinking", delta }),
+              },
+              opts.signal,
+            );
+            span.setAttributes({
+              [ATTR.aiInputTokens]: m.usage?.input_tokens ?? 0,
+              [ATTR.aiOutputTokens]: m.usage?.output_tokens ?? 0,
+              "gen_ai.response.finish_reasons": [String(m.stop_reason)],
+            });
+            return m;
           },
-          opts.signal,
+          { kind: SpanKind.CLIENT },
         );
         parseRetries = 0;
       } catch (e) {
@@ -166,7 +199,11 @@ export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "
         emit({ type: "tool", name: use.name, status: "start" });
         let outcome: Awaited<ReturnType<typeof runTool>>;
         try {
-          outcome = await runTool(use.name, use.input, ctx);
+          outcome = await withSpan(`ai tool ${use.name}`, { "gen_ai.tool.name": use.name }, async (span) => {
+            const o = await runTool(use.name, use.input, ctx);
+            if (o.isError) recordError(span, undefined, o.content.split("\n")[0]);
+            return o;
+          });
         } catch (e) {
           outcome = { content: `The tool failed: ${(e as Error).message}`, isError: true };
         }
@@ -204,13 +241,14 @@ export async function runTurn(opts: TurnOptions): Promise<"idle" | "waiting" | "
       error: "The AI took too many steps on this message. Send it again, or ask for a smaller change.",
     });
   } catch (e) {
+    const p = e instanceof ModelError ? PROVIDERS[e.provider] : null;
     const message =
-      e instanceof Anthropic.AuthenticationError
-        ? "The AI service rejected the API key. Check ANTHROPIC_API_KEY."
-        : e instanceof Anthropic.RateLimitError
-          ? "The AI service is busy (rate limited). Try again in a minute."
-          : e instanceof Anthropic.APIError
-            ? `The AI service returned an error (${e.status}). Try again.`
+      e instanceof ModelError && e.kind === "auth"
+        ? `${p!.name} rejected the API key. Check ${p!.keyEnv[0]}.`
+        : e instanceof ModelError && e.kind === "rate_limit"
+          ? `${p!.name} is busy (rate limited). Try again in a minute.`
+          : e instanceof ModelError
+            ? `${p!.name} returned an error${e.status ? ` (${e.status})` : ""}. Try again.`
             : `Something went wrong: ${(e as Error).message}`;
     return await finish("error", { error: message });
   }

@@ -144,7 +144,10 @@ test("build an HTTP integration from a template, test it, and call it with its t
   await page.getByRole("button", { name: "Send test request" }).click();
   await expect(page.locator("pre").filter({ hasText: '"hello": "world"' }).first()).toBeVisible();
 
-  await page.getByRole("button", { name: "Show token" }).click();
+  // Tokens are stored as hashes: created once, shown once.
+  await expect(page.getByText("No token yet")).toBeVisible();
+  await page.getByRole("button", { name: "Create token" }).click();
+  await expect(page.getByText("Copy the token now; it is not shown again.")).toBeVisible();
   const curl = page.locator("pre").filter({ hasText: "curl -X POST" });
   await expect(curl).toContainText("oicr_t_");
   const text = (await curl.textContent()) ?? "";

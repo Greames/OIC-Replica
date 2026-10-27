@@ -1,12 +1,12 @@
-import { timingSafeEqual } from "node:crypto";
-import { findActiveTrigger } from "@oicr/db";
+import { findActiveTrigger, verifyTriggerToken } from "@oicr/db";
 import { FlowDoc } from "@oicr/flow-schema";
+import { ATTR, currentTraceId, extractContext, SpanKind, withSpan } from "@oicr/platform";
 import { startRun } from "@oicr/runtime";
 import { db } from "@/lib/db";
 
 // Trigger endpoint for active application integrations:
 //   {METHOD} /t/{org slug}/{integration identifier}{trigger path}
-//   Authorization: Bearer <trigger token>     (shown on the integration page)
+//   Authorization: Bearer <trigger token>     (created on the integration page, stored as a hash)
 //   Idempotency-Key: <optional, dedupes repeats>
 // The request body (or the query, for GET) becomes $trigger.
 // Sync integrations answer with their `return` step; others get 202 + run id.
@@ -22,16 +22,33 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   return Response.json(body, { status, headers });
 }
 
-function sameToken(given: string, expected: string): boolean {
-  const a = Buffer.from(given);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+/** Each call is a server span, continuing the caller's trace when it sends traceparent. */
+function handle(req: Request, ctx: Params): Promise<Response> {
+  return withSpan(
+    "http trigger",
+    { "http.request.method": req.method, "url.path": new URL(req.url).pathname },
+    async (span) => {
+      const res = await handleInner(req, ctx, (k, v) => span.setAttribute(k, v));
+      span.setAttribute("http.response.status_code", res.status);
+      const trace = currentTraceId();
+      if (trace) res.headers.set("x-trace-id", trace);
+      return res;
+    },
+    { kind: SpanKind.SERVER, parent: extractContext(req.headers) },
+  );
 }
 
-async function handle(req: Request, { params }: Params): Promise<Response> {
+async function handleInner(
+  req: Request,
+  { params }: Params,
+  tag: (key: string, value: string) => void,
+): Promise<Response> {
   const { org, identifier, path = [] } = await params;
   const found = await findActiveTrigger(db, org, identifier);
   if (!found) return json(404, { error: "not_found", message: "No active integration at this address." });
+  tag(ATTR.tenant, found.integration.orgId);
+  tag(ATTR.integration, found.integration.id);
+  tag(ATTR.integrationVersion, found.integration.version);
 
   const doc = FlowDoc.safeParse(found.integration.definition);
   if (!doc.success || doc.data.trigger.type !== "http") {
@@ -40,7 +57,7 @@ async function handle(req: Request, { params }: Params): Promise<Response> {
   const trigger = doc.data.trigger;
 
   const given = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-  if (!found.token || !sameToken(given, found.token)) {
+  if (!verifyTriggerToken(given, found.tokenHash)) {
     return json(
       401,
       { error: "unauthorized", message: "Send the integration's token as Authorization: Bearer <token>." },

@@ -28,6 +28,8 @@ beforeAll(async () => {
         res
           .writeHead(200, { "content-type": "application/json" })
           .end(JSON.stringify({ id: url.pathname.split("/")[2], q: url.search }));
+      } else if (url.pathname === "/limited") {
+        res.writeHead(429, { "content-type": "application/json", "retry-after": "7" }).end('{"error":"slow down"}');
       } else if (url.pathname === "/boom") {
         res.writeHead(503, { "content-type": "application/json" }).end('{"error":"down"}');
       } else if (url.pathname === "/bad") {
@@ -121,6 +123,28 @@ describe("rest.invoke", () => {
       .then(unexpected, asAdapterError);
     expect(e503.code).toBe("http_503");
     expect(e503.retryable).toBe(true);
+    const e429 = await rest
+      .invoke(conn(), { operation: "GET /limited", config: {}, request: null })
+      .then(unexpected, asAdapterError);
+    expect(e429.retryable).toBe(true);
+    expect(e429.retryAfterMs).toBe(7000);
+  });
+
+  it("traces each call without the query string", async () => {
+    const { startTestTelemetry } = await import("@oicr/platform/otel");
+    const { exporter } = startTestTelemetry();
+    await rest.invoke(conn(), {
+      operation: "GET /orders/{id}",
+      config: {},
+      request: { params: { id: "9" }, query: { key: "secret" } },
+    });
+    const span = exporter.getFinishedSpans().find((s) => s.name === "HTTP GET")!;
+    expect(span.attributes).toMatchObject({
+      "http.request.method": "GET",
+      "url.path": "/orders/9",
+      "http.response.status_code": 200,
+    });
+    expect(JSON.stringify(span.attributes)).not.toContain("secret");
   });
 
   it("returns text bodies as strings", async () => {

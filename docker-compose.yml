@@ -1,7 +1,9 @@
 # Everything needed to run OIC-Replica locally or self-hosted.
-#   cp .env.example .env   (set BETTER_AUTH_SECRET and SECRETS_KEY)
+#   cp .env.example .env   (set BETTER_AUTH_SECRET)
 #   docker compose up --build
-# Postgres only, for `pnpm dev`:  docker compose up -d postgres minio
+# Customer credentials are kept in the bundled Vault (deploy/vault); set VAULT_ADDR
+# and Vault credentials to use your own. OTEL_EXPORTER_OTLP_ENDPOINT turns on tracing.
+# Postgres only, for `pnpm dev`:  docker compose up -d postgres
 
 services:
   postgres:
@@ -17,22 +19,37 @@ services:
       interval: 3s
       retries: 20
 
-  minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    command: server /data --console-address ":9001"
+  vault:
+    image: hashicorp/vault:1.20
+    entrypoint: ["/bin/sh", "/vault/init.sh"]
     environment:
-      MINIO_ROOT_USER: oicr
-      MINIO_ROOT_PASSWORD: oicr-secret
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [minio:/data]
+      VAULT_ADDR: http://127.0.0.1:8200
+    volumes:
+      - ./deploy/vault/init.sh:/vault/init.sh:ro
+      - ./deploy/vault/config.hcl:/vault/config/config.hcl:ro
+      - vault-data:/vault/file
+      - vault-token:/vault/token
+    ports: ["8200:8200"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /vault/token/ready && vault status >/dev/null"]
+      interval: 2s
+      retries: 30
 
   migrate:
     build: .
     command: ["node", "packages/db/dist/migrate.js"]
     environment:
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      SECRETS_BACKEND: vault
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN_FILE: /vault-token/token
+      VAULT_KV_MOUNT: oicr
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes: ["vault-token:/vault-token:ro"]
     depends_on:
       postgres: { condition: service_healthy }
+      vault: { condition: service_healthy }
 
   web:
     build: .
@@ -40,15 +57,28 @@ services:
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
-      SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
+      SECRETS_BACKEND: vault
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN_FILE: /vault-token/token
+      VAULT_KV_MOUNT: oicr
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      SECRETS_KEY: ${SECRETS_KEY:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       AI_MODEL: ${AI_MODEL:-}
       AI_EFFORT: ${AI_EFFORT:-}
       APP_URL: ${APP_URL:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
+    volumes: ["vault-token:/vault-token:ro"]
     ports: ["3000:3000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -61,15 +91,22 @@ services:
     command: ["node", "apps/worker/dist/main.js"]
     environment:
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
-      SECRETS_KEY: ${SECRETS_KEY:?set SECRETS_KEY in .env}
+      SECRETS_BACKEND: vault
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN_FILE: /vault-token/token
+      VAULT_KV_MOUNT: oicr
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       APP_URL: ${APP_URL:-${BETTER_AUTH_URL:-http://localhost:3000}}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    volumes: ["vault-token:/vault-token:ro"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     restart: unless-stopped
 
 volumes:
   pgdata:
-  minio:
+  vault-data:
+  vault-token:

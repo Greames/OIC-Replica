@@ -11,6 +11,7 @@ import {
   newStep,
   removeStep,
   STEP_INFO,
+  type Step,
   type StepLocation,
   type StepType,
   updateStep,
@@ -20,6 +21,7 @@ import { AlertTriangle, CheckCircle2, MousePointerClick, Undo2, X } from "lucide
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { saveDefinitionAction } from "@/app/(app)/integrations/actions";
+import { Mapper, type MapperSamples } from "@/components/mapper/mapper";
 import { Button } from "@/components/ui/button";
 import { Canvas, STEP_ICONS } from "./canvas";
 import { Inspector } from "./inspector";
@@ -36,12 +38,16 @@ export function FlowEditor({
   hash,
   locked,
   connections,
+  samples = { pasted: {}, run: { steps: {} } },
+  lookups = [],
 }: {
   integrationId: string;
   initial: FlowDoc;
   hash: string;
   locked: boolean;
   connections: { identifier: string; role: string; status: string; adapter: string }[];
+  samples?: MapperSamples;
+  lookups?: { name: string; domains: string[] }[];
 }) {
   const router = useRouter();
   const [doc, setDoc] = useState<FlowDoc>(initial);
@@ -50,6 +56,7 @@ export function FlowEditor({
   const [history, setHistory] = useState<FlowDoc[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [inserting, setInserting] = useState<StepLocation | null>(null);
+  const [mapping, setMapping] = useState<{ stepId: string; field: "expression" | "request" | "body" } | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, start] = useTransition();
   const dirty = JSON.stringify(doc) !== JSON.stringify(saved);
@@ -60,8 +67,9 @@ export function FlowEditor({
         connections: Object.fromEntries(
           connections.map((c) => [c.identifier, { role: c.role as "invoke", adapter: c.adapter }]),
         ),
+        lookups: lookups.map((l) => l.name),
       }),
-    [doc, connections],
+    [doc, connections, lookups],
   );
   const issuesByStep = useMemo(() => {
     const map: Record<string, number> = {};
@@ -248,6 +256,7 @@ export function FlowEditor({
               }}
               onDelete={() => apply((d) => removeStep(d, step.id), null)}
               onMove={(dir) => move(step.id, dir)}
+              onOpenMapper={(field) => setMapping({ stepId: step.id, field })}
             />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 py-10 text-center text-sm text-fg-muted">
@@ -257,6 +266,43 @@ export function FlowEditor({
           )}
         </aside>
       </div>
+
+      {mapping &&
+        (() => {
+          const target = findStep(doc, mapping.stepId)?.step as (Step & Record<string, unknown>) | undefined;
+          if (!target) return null;
+          const value = String(target[mapping.field] ?? "");
+          const what = mapping.field === "request" ? "request" : mapping.field === "body" ? "response" : "output";
+          return (
+            <Mapper
+              key={mapping.stepId + mapping.field}
+              integrationId={integrationId}
+              doc={doc}
+              stepId={mapping.stepId}
+              title={`Map the ${what} of "${target.label ?? target.id}"`}
+              value={value}
+              targetSchema={
+                target.type === "map" ? (target.targetSchema as Record<string, unknown> | undefined) : undefined
+              }
+              samples={samples}
+              lookups={lookups}
+              disabled={locked}
+              onChange={(v) =>
+                apply((d) =>
+                  updateStep(d, mapping.stepId, {
+                    [mapping.field]: v || (mapping.field === "expression" ? "{}" : undefined),
+                  }),
+                )
+              }
+              onTargetSchema={
+                target.type === "map"
+                  ? (schema) => apply((d) => updateStep(d, mapping.stepId, { targetSchema: schema }))
+                  : undefined
+              }
+              onClose={() => setMapping(null)}
+            />
+          );
+        })()}
 
       {message && (
         <p role="status" className={`text-sm ${message.ok ? "text-success" : "text-danger"}`}>

@@ -77,8 +77,10 @@ export const notificationChannels = pgTable(
       .references(() => orgs.id, { onDelete: "cascade" }),
     kind: text("kind", { enum: CHANNEL_KINDS }).notNull(),
     name: text("name").notNull(),
-    /** URL / bot token / chat id / addresses / signing secret, encrypted. */
-    configCiphertext: bytea("config_ciphertext").notNull(),
+    /** Where it sends, masked, for display (e.g. "Slack webhook …a1b2c3"). The settings live in the secret store. */
+    target: text("target").notNull().default(""),
+    /** Legacy (pre-v2): moved to the secret store by `migrate`, then emptied. */
+    configCiphertext: bytea("config_ciphertext"),
     /** Patterns like "*", "instance.*", "instance.failed". */
     eventTypes: text("event_types").array().notNull().default(["*"]),
     minSeverity: text("min_severity", { enum: SEVERITIES }).notNull().default("info"),

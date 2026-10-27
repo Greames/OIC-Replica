@@ -3,7 +3,7 @@ import type { FlowDiff } from "@oicr/flow-schema";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/ui/card";
-import { aiEnabled } from "@/lib/ai";
+import { aiEnabled, aiHint, aiLabel } from "@/lib/ai";
 import { db } from "@/lib/db";
 import { UUID } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
@@ -77,9 +77,10 @@ export default async function AiSessionPage({
       )}
       {!aiEnabled() && (
         <p role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/5 p-3 text-sm">
-          The AI builder is not set up on this server. Set <code>ANTHROPIC_API_KEY</code> and restart.
+          The AI builder is not set up on this server. {aiHint()} Then restart.
         </p>
       )}
+      {aiLabel() && <p className="-mt-3 mb-4 text-xs text-fg-muted">Built with {aiLabel()}</p>}
       <Chat
         sessionId={session.id}
         initialItems={toChatItems(messages, session.pending?.otherResults ?? [])}

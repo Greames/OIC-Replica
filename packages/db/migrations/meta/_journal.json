@@ -29,6 +29,20 @@
       "when": 1792953707633,
       "tag": "0003_events",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792956191951,
+      "tag": "0004_lookups",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792995178517,
+      "tag": "0005_secret_refs",
+      "breakpoints": true
     }
   ]
 }

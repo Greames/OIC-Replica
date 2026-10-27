@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@oicr/flow-schema": "workspace:*",
-    "jsonata": "^2.2.2"
+    "jsonata": "^2.2.2",
+    "@oicr/platform": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22",

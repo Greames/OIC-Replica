@@ -32,7 +32,9 @@
     "react-dom": "^19.3.1",
     "server-only": "^0.0.1",
     "tailwind-merge": "^3.7.0",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@oicr/platform": "workspace:*",
+    "@oicr/vault": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

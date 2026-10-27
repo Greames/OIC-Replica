@@ -2,7 +2,7 @@ import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { deliveries, events, notificationChannels, SEVERITIES } from "../schema/events.js";
-import { decryptSecret, encryptSecret } from "../secrets.js";
+import { secretStore } from "../secret-store.js";
 import { type Actor, assertCan, NotFoundError } from "./access.js";
 
 // Notification channels. Config (webhook URLs, bot tokens, signing secrets)
@@ -50,7 +50,9 @@ export const ChannelInput = z.object({
 export type ChannelInput = z.input<typeof ChannelInput>;
 
 type Row = typeof notificationChannels.$inferSelect;
-export type ChannelView = Omit<Row, "configCiphertext"> & { target: string };
+export type ChannelView = Omit<Row, "configCiphertext">;
+
+const configRef = (orgId: string, id: string) => ({ tenant: orgId, kind: "channel" as const, id });
 
 function mask(kind: Row["kind"], config: Record<string, unknown>): string {
   switch (kind) {
@@ -68,15 +70,11 @@ function mask(kind: Row["kind"], config: Record<string, unknown>): string {
 }
 
 function view(row: Row): ChannelView {
-  const { configCiphertext, ...rest } = row;
-  let target: string;
-  try {
-    target = mask(row.kind, decryptSecret(configCiphertext));
-  } catch {
-    target = "Settings unreadable (SECRETS_KEY changed?). Re-create this channel.";
-  }
-  return { ...rest, target };
+  const { configCiphertext: _legacy, ...rest } = row;
+  return rest;
 }
+
+export const maskChannelTarget = mask;
 
 export async function listChannels(db: Db, actor: Actor): Promise<ChannelView[]> {
   assertCan(actor, "read");
@@ -98,13 +96,26 @@ export async function createChannel(db: Db, actor: Actor, input: ChannelInput): 
       orgId: actor.orgId,
       kind: data.kind,
       name: data.name,
-      configCiphertext: encryptSecret(config),
+      target: mask(data.kind, config),
       eventTypes: data.eventTypes,
       minSeverity: data.minSeverity,
+      // Paused until its settings are stored, so no delivery can see it half-made.
+      enabled: false,
       createdBy: actor.userId,
     })
     .returning();
-  return view(row!);
+  try {
+    await secretStore(db).put(configRef(actor.orgId, row!.id), config);
+  } catch (e) {
+    await db.delete(notificationChannels).where(eq(notificationChannels.id, row!.id));
+    throw e;
+  }
+  const [ready] = await db
+    .update(notificationChannels)
+    .set({ enabled: true })
+    .where(eq(notificationChannels.id, row!.id))
+    .returning();
+  return view(ready!);
 }
 
 export async function setChannelEnabled(db: Db, actor: Actor, id: string, enabled: boolean): Promise<void> {
@@ -119,6 +130,12 @@ export async function setChannelEnabled(db: Db, actor: Actor, id: string, enable
 
 export async function deleteChannel(db: Db, actor: Actor, id: string): Promise<void> {
   assertCan(actor, "admin");
+  const [row] = await db
+    .select({ id: notificationChannels.id })
+    .from(notificationChannels)
+    .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
+  if (!row) return;
+  await secretStore(db).delete(configRef(actor.orgId, id));
   await db
     .delete(notificationChannels)
     .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
@@ -157,9 +174,15 @@ export interface DueDelivery {
   event: typeof events.$inferSelect;
 }
 
-/** Claims due deliveries (SKIP LOCKED) and pushes their next attempt out, so a crash cannot double-send quickly. */
+/**
+ * Claims due deliveries (SKIP LOCKED) and pushes their next attempt out, so a
+ * crash cannot double-send quickly. Channel settings are read from the secret
+ * store after the claim commits, so no row lock waits on Vault. A delivery
+ * whose settings cannot be read now is rescheduled (store unavailable) or
+ * failed (settings missing); it never blocks the others.
+ */
 export async function claimDueDeliveries(db: Db, limit = 20, now = new Date()): Promise<DueDelivery[]> {
-  return db.transaction(async (tx) => {
+  const claimed = await db.transaction(async (tx) => {
     const rows = await tx
       .select({ delivery: deliveries, channel: notificationChannels, event: events })
       .from(deliveries)
@@ -169,38 +192,42 @@ export async function claimDueDeliveries(db: Db, limit = 20, now = new Date()): 
       .orderBy(asc(deliveries.nextAttemptAt))
       .limit(limit)
       .for("update", { of: deliveries, skipLocked: true });
-    const due: DueDelivery[] = [];
     for (const r of rows) {
-      let config: Record<string, unknown>;
-      try {
-        config = decryptSecret(r.channel.configCiphertext);
-      } catch {
-        // One unreadable channel (e.g. after SECRETS_KEY changed) must not block everyone else's deliveries.
-        const error =
-          "The channel's settings could not be decrypted. If SECRETS_KEY changed, delete and re-create the channel.";
-        await tx
-          .update(deliveries)
-          .set({ status: "failed", attempts: sql`${deliveries.attempts} + 1`, lastError: error })
-          .where(eq(deliveries.id, r.delivery.id));
-        await tx
-          .update(notificationChannels)
-          .set({ lastError: error })
-          .where(eq(notificationChannels.id, r.channel.id));
-        continue;
-      }
       await tx
         .update(deliveries)
         .set({ attempts: sql`${deliveries.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 60_000) })
         .where(eq(deliveries.id, r.delivery.id));
-      due.push({
-        id: r.delivery.id,
-        attempts: r.delivery.attempts + 1,
-        channel: { id: r.channel.id, kind: r.channel.kind, name: r.channel.name, config },
-        event: r.event,
-      });
     }
-    return due;
+    return rows;
   });
+  const due: DueDelivery[] = [];
+  for (const r of claimed) {
+    const d: DueDelivery = {
+      id: r.delivery.id,
+      attempts: r.delivery.attempts + 1,
+      channel: { id: r.channel.id, kind: r.channel.kind, name: r.channel.name, config: {} },
+      event: r.event,
+    };
+    let config: Record<string, unknown> | null;
+    try {
+      config = await secretStore(db).get(configRef(r.channel.orgId, r.channel.id));
+    } catch (e) {
+      await markDeliveryFailed(db, d, `The channel's settings could not be read: ${(e as Error).message}`, true, now);
+      continue;
+    }
+    if (!config) {
+      await markDeliveryFailed(
+        db,
+        d,
+        "The channel's settings are missing. Delete and re-create the channel.",
+        false,
+        now,
+      );
+      continue;
+    }
+    due.push({ ...d, channel: { ...d.channel, config } });
+  }
+  return due;
 }
 
 export async function markDelivered(db: Db, d: DueDelivery): Promise<void> {
@@ -247,10 +274,7 @@ export async function loadChannelForSend(db: Db, actor: Actor, id: string) {
     .from(notificationChannels)
     .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
   if (!row) throw new NotFoundError("Channel");
-  return {
-    id: row.id,
-    kind: row.kind,
-    name: row.name,
-    config: decryptSecret<Record<string, unknown>>(row.configCiphertext),
-  };
+  const config = await secretStore(db).get(configRef(row.orgId, row.id));
+  if (!config) throw new NotFoundError("Channel settings");
+  return { id: row.id, kind: row.kind, name: row.name, config };
 }

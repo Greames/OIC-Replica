@@ -91,11 +91,13 @@ Expressions are JSONata. Bindings:
 - $<stepId>: the output of an earlier step, e.g. $fetch.body.orders. Only steps that already ran on every path are visible: not steps inside a loop or branch from outside it.
 - $<as>: the current forEach item
 - $fault: inside onFault, {code, message, stepId, details}
+- $lookupValue("lookup", "from domain", value, "to domain", default?): translates a value with a lookup (e.g. country codes between systems). Check list_lookups for names and domains; use only lookups that exist. A list of values gives a list.
 Text fields marked "template" (log.message, notify.to/subject/body, throw.message) are literal text with {{ JSONata }} parts.
 Step ids: letters, digits and _, start with a letter, unique in the document. Use short meaningful ids (fetch, each, send), and labels for people.
 Business identifiers (businessIds, up to 3, exactly one primary) let people find runs, e.g. by order id.
 
 Good practice: wrap per-record work in a scope with onFault so one bad record does not stop the rest; add retry on invokes to external APIs; give every step a label; prefer one map step before an invoke over long inline request expressions.
+Write map expressions (and invoke requests) as object constructors with quoted keys, one field per target field, and lists as [$source.items.{ "field": expr }], so people can see and edit them in the visual mapper. When you know the target's shape, set the map step's targetSchema (JSON Schema; mark fields the target requires as required).
 
 # Adapters
 ${adapterHelp}

@@ -1,9 +1,12 @@
+import { injectContext } from "@oicr/platform";
 import { PgBoss } from "pg-boss";
 
 export const RUN_QUEUE = "run-instance";
 
 export interface RunJob {
   instanceId: string;
+  /** W3C trace context of whoever queued it, so the worker continues the same trace. */
+  trace?: Record<string, string>;
 }
 
 let shared: Promise<PgBoss> | undefined;
@@ -33,7 +36,10 @@ export function getQueue(opts: { url?: string; worker?: boolean } = {}): Promise
 
 export async function enqueueRun(instanceId: string): Promise<void> {
   const boss = await getQueue();
-  await boss.send(RUN_QUEUE, { instanceId } satisfies RunJob, { retryLimit: 0, singletonKey: instanceId });
+  await boss.send(RUN_QUEUE, { instanceId, trace: injectContext() } satisfies RunJob, {
+    retryLimit: 0,
+    singletonKey: instanceId,
+  });
 }
 
 export async function stopQueue(): Promise<void> {

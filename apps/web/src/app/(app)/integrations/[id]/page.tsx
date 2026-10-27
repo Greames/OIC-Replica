@@ -3,8 +3,10 @@ import {
   connectionIndex,
   describeSchedule,
   getIntegration,
+  getSamples,
   listConnections,
   listInstances,
+  listLookups,
   NotFoundError,
   orgs,
 } from "@oicr/db";
@@ -43,11 +45,13 @@ export default async function IntegrationPage({
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-  const [runs, conns, connRows, [org]] = await Promise.all([
+  const [runs, conns, connRows, [org], samples, lookupRows] = await Promise.all([
     listInstances(db, viewer, { integrationId: id, limit: 10 }),
     connectionIndex(db, viewer.orgId),
     listConnections(db, viewer),
     db.select({ slug: orgs.slug }).from(orgs).where(eq(orgs.id, viewer.orgId)),
+    getSamples(db, viewer, id),
+    listLookups(db, viewer),
   ]);
 
   const def = integration.definition as { trigger?: { type?: string; method?: string; path?: string; sync?: boolean } };
@@ -127,6 +131,7 @@ export default async function IntegrationPage({
             id={id}
             url={`${base}/t/${org.slug}/${integration.identifier}${triggerPath}`}
             method={def.trigger?.method ?? "POST"}
+            hint={integration.triggerTokenHint}
           />
         </Card>
       )}
@@ -162,6 +167,8 @@ export default async function IntegrationPage({
               status: c.status,
               adapter: c.adapter,
             }))}
+            samples={samples}
+            lookups={lookupRows.map((l) => ({ name: l.name, domains: l.domains }))}
           />
         ) : (
           <>

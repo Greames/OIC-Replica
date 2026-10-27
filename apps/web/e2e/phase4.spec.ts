@@ -116,7 +116,7 @@ test("every update: live activity, a signed webhook (Hermes), the API and the MC
   };
   const reader = await mcp(readKey);
   const readTools = (await reader.listTools()).tools.map((t) => t.name);
-  expect(readTools).toEqual(expect.arrayContaining(["list_integrations", "get_run", "list_events"]));
+  expect(readTools).toEqual(expect.arrayContaining(["list_integrations", "get_run", "list_events", "list_lookups"]));
   expect(readTools).not.toContain("run_integration");
   expect((await reader.listTools()).tools.find((t) => t.name === "list_events")?.annotations?.readOnlyHint).toBe(true);
   const listed = await reader.callTool({

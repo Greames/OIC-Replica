@@ -203,6 +203,7 @@ describe("runFlow", () => {
     h.deps.sleep = async (ms) => {
       sleeps.push(ms);
     };
+    h.deps.random = () => 1; // top of the jitter band: the full exponential wait
     const doc = flow({
       steps: [
         { id: "c", type: "invoke", connection: "x", operation: "GET /", retry: { attempts: 3, backoffSeconds: 2 } },
@@ -221,6 +222,49 @@ describe("runFlow", () => {
     const r2 = await runFlow(doc, {}, h2.deps);
     expect(r2.fault?.code).toBe("http_400");
     expect(m).toBe(1);
+  });
+
+  it("jitters retry waits within their band and honours Retry-After", async () => {
+    const doc = flow({
+      steps: [
+        { id: "c", type: "invoke", connection: "x", operation: "GET /", retry: { attempts: 3, backoffSeconds: 2 } },
+      ],
+    });
+    let n = 0;
+    const h = harness(() => {
+      n++;
+      if (n === 1) throw Object.assign(new ErrWithCode("http_503", "down", true), {});
+      if (n === 2) throw Object.assign(new ErrWithCode("http_429", "slow down", true), { retryAfterMs: 30_000 });
+      return { status: 200 };
+    });
+    const sleeps: number[] = [];
+    h.deps.sleep = async (ms) => {
+      sleeps.push(ms);
+    };
+    h.deps.random = () => 0; // bottom of the band: half the exponential wait
+    await runFlow(doc, {}, h.deps);
+    expect(sleeps).toEqual([1000, 30_000]);
+  });
+
+  it("traces the run and every step, marking faults", async () => {
+    const { startTestTelemetry } = await import("@oicr/platform/otel");
+    const { exporter } = startTestTelemetry();
+    const doc = flow({
+      steps: [
+        { id: "m", type: "map", expression: '{ "a": 1 }' },
+        { id: "boom", type: "throw", code: "bad_order", message: "Order is bad" },
+      ],
+    });
+    await runFlow(doc, {}, harness().deps);
+    const spans = exporter.getFinishedSpans();
+    const run = spans.find((s) => s.name === "flow run")!;
+    const fail = spans.find((s) => s.name === "step throw")!;
+    expect(spans.find((s) => s.name === "step map")?.attributes["oicr.step_id"]).toBe("m");
+    expect(fail.status.code).toBe(2);
+    expect(fail.attributes["oicr.fault_code"]).toBe("bad_order");
+    expect(fail.parentSpanContext?.spanId).toBe(run.spanContext().spanId);
+    expect(run.status.code).toBe(2);
+    expect(run.attributes["oicr.steps_executed"]).toBe(2);
   });
 
   it("returns a response and ends the run", async () => {
@@ -248,6 +292,29 @@ describe("runFlow", () => {
     });
     const r = await runFlow(doc, {}, harness().deps);
     expect(r).toMatchObject({ status: "succeeded", stopped: true, steps: 1 });
+  });
+
+  it("translates values with lookups, loading each lookup once", async () => {
+    const doc = flow({
+      steps: [
+        {
+          id: "m",
+          type: "map",
+          expression:
+            '{ "a": $lookupValue("countries", "shop", $trigger.c, "erp"), "b": $lookupValue("countries", "shop", "FR", "erp", "??") }',
+        },
+        { id: "bad", type: "map", expression: '$lookupValue("missing", "a", 1, "b")' },
+      ],
+    });
+    const h = harness();
+    const lookup = vi.fn(async (name: string) =>
+      name === "countries" ? { name, domains: ["shop", "erp"], rows: [["US", "USA"]] } : null,
+    );
+    const r = await runFlow(doc, { c: "US" }, { ...h.deps, lookup });
+    expect(h.records[0]?.output).toEqual({ a: "USA", b: "??" });
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(r.fault).toMatchObject({ code: "expression_error", stepId: "bad" });
+    expect(r.fault?.message).toContain('Lookup "missing" does not exist.');
   });
 
   it("turns expression errors into faults on the step", async () => {
