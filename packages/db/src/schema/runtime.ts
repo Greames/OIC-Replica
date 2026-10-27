@@ -1,3 +1,4 @@
+import type { SemanticPlan } from "@oicr/semantic";
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -228,10 +229,17 @@ export const integrationPlans = pgTable(
     definitionHash: text("definition_hash").notNull(),
     definition: jsonb("definition").notNull(),
     tracingLevel: text("tracing_level", { enum: TRACING_LEVELS }).notNull(),
+    /** The compiled semantic bindings the definition uses (null: it uses none). */
+    semantics: jsonb("semantics").$type<SemanticPlan>(),
+    /** SemanticPlan.hash, or "" without semantics; part of what makes a plan reusable. */
+    semanticHash: text("semantic_hash").notNull().default(""),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: created(),
   },
-  (t) => [uniqueIndex().on(t.integrationId, t.definitionHash, t.tracingLevel), index().on(t.orgId)],
+  (t) => [
+    uniqueIndex("integration_plans_reuse_index").on(t.integrationId, t.definitionHash, t.tracingLevel, t.semanticHash),
+    index().on(t.orgId),
+  ],
 );
 
 export const TENANT_TIERS = ["standard", "business", "dedicated"] as const;

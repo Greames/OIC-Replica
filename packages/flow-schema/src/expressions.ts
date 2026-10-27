@@ -1,4 +1,5 @@
 import jsonata from "jsonata";
+import { isSemanticFunction, SEMANTIC_FUNCTIONS, type SemanticCall } from "./semantic.js";
 
 /** JSONata's built-in functions. They can be passed as values, e.g. $map(xs, $string). */
 const BUILTINS = new Set([
@@ -81,6 +82,8 @@ export interface ParsedExpression {
   references: string[];
   /** Lookup names used as $lookupValue("name", ...). */
   lookups: string[];
+  /** Semantic function calls ($toSemantic, $fromSemantic, $translate). */
+  semantics: SemanticCall[];
 }
 
 interface AstNode {
@@ -101,12 +104,14 @@ export function parseExpression(source: string): ParsedExpression {
       error: { message: err.message ?? String(e), position: err.position },
       references: [],
       lookups: [],
+      semantics: [],
     };
   }
 
   const read = new Set<string>();
   const bound = new Set<string>();
   const lookups = new Set<string>();
+  const semantics: SemanticCall[] = [];
 
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) {
@@ -135,6 +140,7 @@ export function parseExpression(source: string): ParsedExpression {
       const first = (n.arguments as AstNode[] | undefined)?.[0];
       if (proc?.value === "lookupValue" && first?.type === "string" && typeof first.value === "string")
         lookups.add(first.value);
+      if (isSemanticFunction(proc?.value)) semantics.push(semanticCall(proc.value, (n.arguments as AstNode[]) ?? []));
       visit(n.arguments);
       return;
     }
@@ -151,7 +157,19 @@ export function parseExpression(source: string): ParsedExpression {
     // "" is $ (context), "$" is $$ (root)
     (name) => name !== "" && name !== "$" && !bound.has(name) && !BUILTINS.has(name),
   );
-  return { ok: true, references: references.sort(), lookups: [...lookups].sort() };
+  return { ok: true, references: references.sort(), lookups: [...lookups].sort(), semantics };
+}
+
+function semanticCall(fn: keyof typeof SEMANTIC_FUNCTIONS, args: AstNode[]): SemanticCall {
+  const want = SEMANTIC_FUNCTIONS[fn].objects;
+  const names = args.slice(1);
+  if (args.length !== 1 + want * 2) return { fn, objects: [], arity: true };
+  if (!names.every((a) => a.type === "string" && typeof a.value === "string" && a.value !== ""))
+    return { fn, objects: [], dynamic: true };
+  const objects = [];
+  for (let i = 0; i < want; i++)
+    objects.push({ system: names[i * 2]!.value as string, object: names[i * 2 + 1]!.value as string });
+  return { fn, objects };
 }
 
 /** Splits a template like "Order {{$order.id}} failed" into its expressions. */

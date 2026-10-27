@@ -33,6 +33,7 @@ import {
   saveDefinition,
   schedules,
   secretStore,
+  setBinding,
   setSample,
   setSchedule,
   testConnection,
@@ -550,6 +551,44 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     const now = await executeInstance(db!, (await createInstanceFor(v2)).id);
     const latest = await getInstance(db!, actor, now.instance.id);
     expect(latest.steps.find((st) => st.stepId === "m")?.output).toEqual({ v: 2 });
+  });
+
+  it("translates through the semantic catalog with the bindings pinned at activation", async () => {
+    const integ = await createIntegration(db!, actor, {
+      projectId,
+      name: `Semantic ${Date.now()}`,
+      style: "application",
+      definition: {
+        schemaVersion: 1,
+        style: "application",
+        trigger: { id: "t", type: "http", method: "POST", sync: true },
+        steps: [
+          {
+            id: "r",
+            type: "return",
+            body: '$translate($trigger.items, "oracle-ebs", "HZ_CUST_ACCOUNTS", "netsuite", "customer")',
+          },
+        ],
+      },
+    });
+    const active = await activateIntegration(db!, actor, integ.id, { tracingLevel: "debug" });
+    const items = [
+      { ACCOUNT_NUMBER: 1001, ACCOUNT_NAME: "Acme", STATUS: "A", CUST_ACCOUNT_ID: 7 },
+      { ACCOUNT_NUMBER: "1002", ACCOUNT_NAME: "Globex", STATUS: "I" },
+    ];
+    const r1 = await startRun(db!, active, { input: { items }, kind: "request", sync: true });
+    expect(r1.response?.body).toEqual([
+      { entityId: "1001", companyName: "Acme", isInactive: false },
+      { entityId: "1002", companyName: "Globex", isInactive: true },
+    ]);
+    // A binding changed after activation does not reach runs of the active plan.
+    await setBinding(db!, actor, { system: "netsuite", object: "customer", field: "altName", attribute: "name" });
+    const r2 = await startRun(db!, active, { input: { items }, kind: "request", sync: true });
+    expect(r2.response?.body).toEqual(r1.response?.body);
+    await deactivateIntegration(db!, actor, integ.id);
+    const again = await activateIntegration(db!, actor, integ.id, { tracingLevel: "debug" });
+    const r3 = await startRun(db!, again, { input: { items }, kind: "request", sync: true });
+    expect((r3.response!.body as { altName?: string }[])[0]?.altName).toBe("Acme");
   });
 
   it("pauses calls to a failing connection, per tenant, and announces it", async () => {

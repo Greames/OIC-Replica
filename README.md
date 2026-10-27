@@ -12,15 +12,20 @@ every step by hand.
   Postgres to our shop API and email me on failure"). The AI asks what it
   needs, builds the flow, and you review the changes before they apply.
 - **Visual canvas and mapper:** see and fine-tune what the AI built.
+- **Semantic catalog:** Oracle Fusion and EBS, NetSuite and SAP S/4HANA objects come mapped to
+  business entities (Customer, Invoice...), so `$translate(...)` moves records between them
+  without field-by-field maps. Paste a sample of any other system and the AI proposes its bindings
+  for you to review.
 - **Every update, everywhere:** live in the app, in Slack, Telegram or email,
   or through [Hermes Agent](https://github.com/NousResearch/hermes-agent) and
   any other MCP client via the built-in MCP server.
 - **Self-hostable:** `docker compose up`.
 - **Built for multi-tenant production:** each workspace's data is isolated by Postgres row-level
   security; customer credentials live in HashiCorp Vault, never in the database; every run, step,
-  connection call and AI turn is traced with OpenTelemetry. See
-  [docs/platform-architecture.md](docs/platform-architecture.md) for where this is going (stream
-  and batch engines, semantic catalog for Oracle, NetSuite and SAP).
+  connection call and AI turn is traced with OpenTelemetry. Trigger calls are served by a separate,
+  stateless stream engine with per-tenant limits. See
+  [docs/platform-architecture.md](docs/platform-architecture.md) for where this is going (batch
+  engine, ERP connectors).
 
 ## Status
 
@@ -88,6 +93,33 @@ it produces in the middle, functions and a test on the right.
 `$lookupValue("countries", "shop", $order.country, "erp", "XX")`. Lookups used by an active
 integration cannot be deleted or renamed.
 
+### Semantic catalog
+
+**Semantic catalog** lists business entities (Customer, Supplier, Item, SalesOrder, PurchaseOrder,
+Invoice, SupplierInvoice, Payment, JournalEntry) and how each system's objects map to them, field
+by field: Oracle Fusion REST resources, Oracle EBS tables, NetSuite records and SAP S/4HANA OData
+entities come bound. Expressions use them by system and object:
+
+```
+$toSemantic($get.body.items, "oracle-ebs", "HZ_CUST_ACCOUNTS")   → Customer records
+$fromSemantic($customer, "netsuite", "customer")                  → a NetSuite customer
+$translate($trigger.d.results, "sap-s4hana", "A_SalesOrder", "oracle-ebs", "OE_ORDER_HEADERS_ALL")
+```
+
+Values are normalised on the way in (numbers, booleans from Y/N or X flags, ISO dates from
+`/Date(ms)/`) and written in each system's format on the way out.
+
+- **Bind a system object** → paste a sample (JSON records or an API response, CSV, or one column
+  per line). The AI proposes the entity and a binding per field, with its confidence and why.
+  Confident bindings that do not conflict apply at once; you approve, correct or reject the rest.
+  Example values can be withheld from the AI, and are never stored.
+- Edit, unbind or reset any binding, add attributes to an entity, or create entities of your own.
+- Activation compiles the bindings an integration uses into its execution plan: runs never read
+  the catalog or call a model. When bindings change later, the integration page says so;
+  activate it again to use them.
+- The AI builder knows the catalog and prefers these functions for ERP-to-ERP flows. Read it over
+  the API (`GET /api/v1/catalog`) or MCP (`semantic_catalog`).
+
 ### Every update
 
 Everything that happens (runs, activations, AI proposals and questions, connection tests) is an
@@ -144,6 +176,7 @@ apps/worker            runs queued integrations, fires schedules, delivers notif
 packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema for the AI
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
 packages/adapters      adapter interface + REST adapter, with SSRF protection
+packages/semantic      semantic catalog: entities, ERP bindings, graph, compiler, runtime functions, AI proposal checks
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
 packages/ai            the AI builder: tool-use loop, providers (Gemini, Claude, GPT), tools, prompt, evals
 packages/platform      retry policy (backoff, jitter, Retry-After, deadlines), OpenTelemetry helpers + bootstrap

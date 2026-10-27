@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
+import { compileSemantics, type SemanticPlan } from "@oicr/semantic";
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
@@ -13,6 +14,7 @@ import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js
 import { connectionIndex } from "./connections.js";
 import { emitEvent } from "./events.js";
 import { toIdentifier } from "./projects.js";
+import { loadSemanticGraph } from "./semantic.js";
 
 export type Integration = typeof integrations.$inferSelect;
 export type IntegrationPlan = typeof integrationPlans.$inferSelect;
@@ -38,13 +40,18 @@ export class InvalidStateError extends Error {
   }
 }
 
-/** Validates against the org's real connections; empty flows stay drafts. */
+/** Validates against the org's real connections, lookups and semantic bindings; empty flows stay drafts. */
 async function check(db: Db, orgId: string, definition: unknown) {
-  const [connections, lookupRows] = await Promise.all([
+  const [connections, lookupRows, graph] = await Promise.all([
     connectionIndex(db, orgId),
     db.select({ name: lookups.name }).from(lookups).where(eq(lookups.orgId, orgId)),
+    loadSemanticGraph(db, orgId),
   ]);
-  const result = validateFlow(definition, { connections, lookups: lookupRows.map((l) => l.name) });
+  const result = validateFlow(definition, {
+    connections,
+    lookups: lookupRows.map((l) => l.name),
+    semanticObjects: graph.objectIndex(),
+  });
   const doc = result.doc ?? (definition as FlowDoc);
   const hasSteps = Array.isArray((definition as FlowDoc)?.steps) && (definition as FlowDoc).steps.length > 0;
   return {
@@ -53,6 +60,7 @@ async function check(db: Db, orgId: string, definition: unknown) {
     errors: result.errors as Issue[],
     warnings: result.warnings,
     status: (result.ok && hasSteps ? "configured" : "draft") as "configured" | "draft",
+    graph,
   };
 }
 
@@ -235,6 +243,13 @@ export async function activateIntegration(
     }
     if (current.style === "scheduled" && !current.schedule)
       throw new InvalidStateError("Set a schedule before activating.");
+    // Resolve semantic references now, so runs never consult the catalog.
+    const compiled = compileSemantics(checked.definition, checked.graph);
+    if (!compiled.ok) {
+      const errors: Issue[] = compiled.errors.map((e) => ({ code: "unknown_semantic_object", ...e }));
+      await db.update(integrations).set({ validationErrors: errors, status: "draft" }).where(eq(integrations.id, id));
+      return refuse(new InvalidStateError(`Fix ${errors.length} problem(s) before activating: ${errors[0]?.message}`));
+    }
 
     const [row] = await db
       .update(integrations)
@@ -243,7 +258,7 @@ export async function activateIntegration(
         activatedAt: new Date(),
         activatedBy: actor.userId,
         tracingLevel: opts.tracingLevel ?? current.tracingLevel,
-        activePlanId: await planFor(db, actor, current, opts.tracingLevel ?? current.tracingLevel),
+        activePlanId: await planFor(db, actor, current, opts.tracingLevel ?? current.tracingLevel, compiled.plan),
       })
       .where(eq(integrations.id, id))
       .returning();
@@ -285,14 +300,17 @@ export async function deactivateIntegration(db: Db, actor: Actor, id: string): P
 
 /**
  * The immutable plan for what is being activated: an existing one when the
- * same definition and tracing level ran before, otherwise a new snapshot.
+ * same definition, tracing level and semantic bindings ran before, otherwise
+ * a new snapshot.
  */
 async function planFor(
   db: Db,
   actor: Actor,
   current: Integration,
   tracingLevel: Integration["tracingLevel"],
+  semantics: SemanticPlan | null,
 ): Promise<string> {
+  const semanticHash = semantics?.hash ?? "";
   const [existing] = await db
     .select({ id: integrationPlans.id })
     .from(integrationPlans)
@@ -301,6 +319,7 @@ async function planFor(
         eq(integrationPlans.integrationId, current.id),
         eq(integrationPlans.definitionHash, current.definitionHash),
         eq(integrationPlans.tracingLevel, tracingLevel),
+        eq(integrationPlans.semanticHash, semanticHash),
       ),
     );
   if (existing) return existing.id;
@@ -313,6 +332,8 @@ async function planFor(
       definitionHash: current.definitionHash,
       definition: current.definition,
       tracingLevel,
+      semantics,
+      semanticHash,
       createdBy: actor.userId,
     })
     .returning({ id: integrationPlans.id });

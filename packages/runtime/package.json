@@ -20,10 +20,11 @@
     "@oicr/db": "workspace:*",
     "@oicr/engine": "workspace:*",
     "@oicr/flow-schema": "workspace:*",
-    "drizzle-orm": "^0.45.4",
-    "pg-boss": "^12.38.0",
     "@oicr/platform": "workspace:*",
-    "@oicr/vault": "workspace:*"
+    "@oicr/semantic": "workspace:*",
+    "@oicr/vault": "workspace:*",
+    "drizzle-orm": "^0.45.4",
+    "pg-boss": "^12.38.0"
   },
   "devDependencies": {
     "@types/node": "^22",

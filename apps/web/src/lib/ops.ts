@@ -12,6 +12,7 @@ import {
   getAiSession,
   getInstance,
   getIntegration,
+  getSemanticGraph,
   INSTANCE_STATUSES,
   InvalidStateError,
   listEvents,
@@ -101,6 +102,46 @@ export async function opListLookups(actor: Actor, opts: { rows?: boolean } = {})
       url: link(`/lookups/${l.id}`),
     })),
   );
+}
+
+/** The semantic catalog: entities, and the system objects bound to them field by field. */
+export async function opSemanticCatalog(actor: Actor, q: { system?: string; entity?: string } = {}) {
+  const graph = await getSemanticGraph(db, actor);
+  return {
+    entities: graph
+      .entities()
+      .filter((e) => !q.entity || e.name === q.entity)
+      .map((e) => ({
+        name: e.name,
+        description: e.description,
+        origin: e.origin,
+        attributes: e.attributes.map((a) => ({
+          name: a.name,
+          type: a.type,
+          description: a.description,
+          ...(a.identifier ? { identifier: true } : {}),
+          ...(a.references ? { references: a.references } : {}),
+        })),
+      })),
+    objects: graph
+      .objects({ system: q.system || undefined, entity: q.entity || undefined })
+      .filter((o) => o.fields.length > 0)
+      .map((o) => ({
+        system: o.system,
+        object: o.object,
+        entity: o.entity,
+        origin: o.origin,
+        fields: o.fields.map((f) => ({
+          field: f.field,
+          attribute: f.attribute,
+          ...(f.read ? { read: f.read } : {}),
+          ...(f.write ? { write: f.write } : {}),
+          ...(f.readOnly ? { read_only: true } : {}),
+          origin: f.origin,
+        })),
+        url: link(`/catalog/systems/${encodeURIComponent(o.system)}/${encodeURIComponent(o.object)}`),
+      })),
+  };
 }
 
 export async function opListIntegrations(actor: Actor, q: { project_id?: string } = {}) {

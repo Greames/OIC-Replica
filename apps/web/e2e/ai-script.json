@@ -262,5 +262,45 @@
       "type": "text",
       "text": "Here is the router."
     }
+  ],
+  [
+    {
+      "type": "tool_use",
+      "id": "toolu_bind_1",
+      "name": "submit_bindings",
+      "input": {
+        "entity": "Customer",
+        "entityConfidence": 0.96,
+        "reasoning": "Customer master records: a customer number, a name and an A/I status.",
+        "bindings": [
+          {
+            "field": "CUST_NO",
+            "attribute": "number",
+            "confidence": 0.97,
+            "evidence": "CUST_NO values look like customer numbers (C-1)"
+          },
+          {
+            "field": "CUST_NAME",
+            "attribute": "name",
+            "confidence": 0.95,
+            "evidence": "Company names"
+          },
+          {
+            "field": "STAT",
+            "attribute": "active",
+            "confidence": 0.7,
+            "evidence": "A/I looks like an active/inactive status",
+            "read": "$value = \"A\"",
+            "write": "$value ? \"A\" : \"I\""
+          }
+        ],
+        "unmapped": [
+          {
+            "field": "ZIP",
+            "reason": "Customer has no postal code attribute."
+          }
+        ]
+      }
+    }
   ]
 ]

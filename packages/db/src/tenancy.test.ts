@@ -43,6 +43,15 @@ describe.skipIf(!url)("tenant isolation (Postgres row-level security)", () => {
     expect(await rlsStatus(db!)).toMatchObject({ enforced: true });
   });
 
+  it("covers every table that holds tenant data", async () => {
+    const unprotected = await db!.execute<{ table: string }>(sql`
+      select c.relname as table from pg_class c
+      join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+      join pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and not a.attisdropped
+      where c.relkind = 'r' and not (c.relrowsecurity and c.relforcerowsecurity)`);
+    expect(unprotected.map((r) => r.table)).toEqual([]);
+  });
+
   it("shows each tenant only its own rows, even without a WHERE org_id", async () => {
     const seenByA = await asTenant(db!, a.orgId, (tx) => tx.select({ org: projects.orgId }).from(projects));
     expect(seenByA.length).toBeGreaterThan(0);

@@ -28,8 +28,9 @@ import {
   SpanKind,
   tracer,
 } from "@oicr/platform";
+import { type SemanticFunctions, type SemanticPlan, semanticFunctions } from "@oicr/semantic";
 import { SecretStoreError } from "@oicr/vault";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { emailNotifier } from "./email.js";
 
 /** Breakers for this process, by "tenant:connection". Openings are announced as events. */
@@ -54,6 +55,19 @@ export const breakers = new BreakerRegistry(
   },
 );
 const breakerEvents: { db?: Db } = {};
+
+// Semantic functions by plan id. Plans are immutable, so entries never go stale.
+const planFunctions = new Map<string, SemanticFunctions>();
+function functionsFor(planId: string | null, semantics: SemanticPlan | null): SemanticFunctions {
+  if (!planId) return semanticFunctions(null);
+  let fns = planFunctions.get(planId);
+  if (!fns) {
+    if (planFunctions.size >= 500) planFunctions.delete(planFunctions.keys().next().value!);
+    fns = semanticFunctions(semantics);
+    planFunctions.set(planId, fns);
+  }
+  return fns;
+}
 
 export interface ExecuteOptions {
   signal?: AbortSignal;
@@ -116,10 +130,14 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
   // plan it was created with; runs from before plans existed use the definition.
   const plan = instance.planId ? await loadPlan(db, instance.orgId, instance.planId) : null;
   const [integration] = plan
-    ? [{ definition: plan.definition, tracingLevel: plan.tracingLevel }]
+    ? [{ definition: plan.definition, tracingLevel: plan.tracingLevel, semantics: plan.semantics }]
     : await asTenant(db, instance.orgId, (db) =>
         db
-          .select({ definition: integrations.definition, tracingLevel: integrations.tracingLevel })
+          .select({
+            definition: integrations.definition,
+            tracingLevel: integrations.tracingLevel,
+            semantics: sql<SemanticPlan | null>`null`,
+          })
           .from(integrations)
           .where(eq(integrations.id, instance.integrationId)),
       );
@@ -155,6 +173,8 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
     signal: opts.signal,
     notify: emailNotifier(),
     lookup: (name) => loadLookup(db, instance.orgId, name),
+    // Semantic references were compiled into the plan at activation.
+    functions: functionsFor(plan?.id ?? null, integration.semantics ?? null),
     async invoke(call) {
       let conn: Awaited<ReturnType<typeof loadConnectionForRun>>;
       try {
