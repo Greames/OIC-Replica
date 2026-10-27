@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "../client.js";
 import { lookups } from "../schema/lookups.js";
 import { integrations } from "../schema/runtime.js";
+import { asTenant } from "../tenancy.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { InvalidStateError } from "./integrations.js";
 
@@ -58,43 +59,51 @@ export const LookupInput = z
 export type LookupInput = z.input<typeof LookupInput>;
 
 export async function listLookups(db: Db, actor: Actor) {
-  assertCan(actor, "read");
-  return db
-    .select({
-      id: lookups.id,
-      name: lookups.name,
-      description: lookups.description,
-      domains: lookups.domains,
-      rowCount: sql<number>`jsonb_array_length(${lookups.rows})`.mapWith(Number),
-      updatedAt: lookups.updatedAt,
-    })
-    .from(lookups)
-    .where(eq(lookups.orgId, actor.orgId))
-    .orderBy(asc(lookups.name));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    return db
+      .select({
+        id: lookups.id,
+        name: lookups.name,
+        description: lookups.description,
+        domains: lookups.domains,
+        rowCount: sql<number>`jsonb_array_length(${lookups.rows})`.mapWith(Number),
+        updatedAt: lookups.updatedAt,
+      })
+      .from(lookups)
+      .where(eq(lookups.orgId, actor.orgId))
+      .orderBy(asc(lookups.name));
+  });
 }
 
 export async function lookupNames(db: Db, orgId: string): Promise<string[]> {
-  const rows = await db.select({ name: lookups.name }).from(lookups).where(eq(lookups.orgId, orgId));
-  return rows.map((r) => r.name);
+  return asTenant(db, orgId, async (db) => {
+    const rows = await db.select({ name: lookups.name }).from(lookups).where(eq(lookups.orgId, orgId));
+    return rows.map((r) => r.name);
+  });
 }
 
 export async function getLookup(db: Db, actor: Actor, id: string): Promise<Lookup> {
-  assertCan(actor, "read");
-  const [row] = await db
-    .select()
-    .from(lookups)
-    .where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)));
-  if (!row) throw new NotFoundError("Lookup");
-  return row;
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const [row] = await db
+      .select()
+      .from(lookups)
+      .where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)));
+    if (!row) throw new NotFoundError("Lookup");
+    return row;
+  });
 }
 
 /** For the runtime: a lookup by name in an org, or null. */
 export async function loadLookup(db: Db, orgId: string, name: string): Promise<LookupTable | null> {
-  const [row] = await db
-    .select({ name: lookups.name, domains: lookups.domains, rows: lookups.rows })
-    .from(lookups)
-    .where(and(eq(lookups.orgId, orgId), eq(lookups.name, name)));
-  return row ?? null;
+  return asTenant(db, orgId, async (db) => {
+    const [row] = await db
+      .select({ name: lookups.name, domains: lookups.domains, rows: lookups.rows })
+      .from(lookups)
+      .where(and(eq(lookups.orgId, orgId), eq(lookups.name, name)));
+    return row ?? null;
+  });
 }
 
 const usesLookup = (definition: unknown, name: string) =>
@@ -102,16 +111,18 @@ const usesLookup = (definition: unknown, name: string) =>
 
 /** Integrations whose definition calls $lookupValue("name", ...). */
 export async function lookupUsage(db: Db, orgId: string, name: string) {
-  const rows = await db
-    .select({
-      id: integrations.id,
-      name: integrations.name,
-      status: integrations.status,
-      definition: integrations.definition,
-    })
-    .from(integrations)
-    .where(and(eq(integrations.orgId, orgId), sql`${integrations.definition}::text like ${`%${name}%`}`));
-  return rows.filter((r) => usesLookup(r.definition, name)).map(({ definition: _d, ...r }) => r);
+  return asTenant(db, orgId, async (db) => {
+    const rows = await db
+      .select({
+        id: integrations.id,
+        name: integrations.name,
+        status: integrations.status,
+        definition: integrations.definition,
+      })
+      .from(integrations)
+      .where(and(eq(integrations.orgId, orgId), sql`${integrations.definition}::text like ${`%${name}%`}`));
+    return rows.filter((r) => usesLookup(r.definition, name)).map(({ definition: _d, ...r }) => r);
+  });
 }
 
 const unique = (e: unknown) =>
@@ -119,51 +130,57 @@ const unique = (e: unknown) =>
   (e as { cause?: { code?: string } }).cause?.code === "23505";
 
 export async function createLookup(db: Db, actor: Actor, input: LookupInput): Promise<Lookup> {
-  assertCan(actor, "build");
-  const data = LookupInput.parse(input);
-  try {
-    const [row] = await db
-      .insert(lookups)
-      .values({ orgId: actor.orgId, ...data, description: data.description ?? null, createdBy: actor.userId })
-      .returning();
-    return row!;
-  } catch (e) {
-    if (unique(e)) throw new ConflictError(`A lookup named "${data.name}" already exists.`);
-    throw e;
-  }
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const data = LookupInput.parse(input);
+    try {
+      const [row] = await db
+        .insert(lookups)
+        .values({ orgId: actor.orgId, ...data, description: data.description ?? null, createdBy: actor.userId })
+        .returning();
+      return row!;
+    } catch (e) {
+      if (unique(e)) throw new ConflictError(`A lookup named "${data.name}" already exists.`);
+      throw e;
+    }
+  });
 }
 
 export async function updateLookup(db: Db, actor: Actor, id: string, input: LookupInput): Promise<Lookup> {
-  assertCan(actor, "build");
-  const data = LookupInput.parse(input);
-  const current = await getLookup(db, actor, id);
-  if (data.name !== current.name) {
-    const used = await lookupUsage(db, actor.orgId, current.name);
-    if (used.length)
-      throw new InvalidStateError(
-        `"${current.name}" is used by ${used.map((u) => u.name).join(", ")}. Renaming it would break them.`,
-      );
-  }
-  try {
-    const [row] = await db
-      .update(lookups)
-      .set({ ...data, description: data.description ?? null, updatedAt: new Date() })
-      .where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)))
-      .returning();
-    return row!;
-  } catch (e) {
-    if (unique(e)) throw new ConflictError(`A lookup named "${data.name}" already exists.`);
-    throw e;
-  }
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const data = LookupInput.parse(input);
+    const current = await getLookup(db, actor, id);
+    if (data.name !== current.name) {
+      const used = await lookupUsage(db, actor.orgId, current.name);
+      if (used.length)
+        throw new InvalidStateError(
+          `"${current.name}" is used by ${used.map((u) => u.name).join(", ")}. Renaming it would break them.`,
+        );
+    }
+    try {
+      const [row] = await db
+        .update(lookups)
+        .set({ ...data, description: data.description ?? null, updatedAt: new Date() })
+        .where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)))
+        .returning();
+      return row!;
+    } catch (e) {
+      if (unique(e)) throw new ConflictError(`A lookup named "${data.name}" already exists.`);
+      throw e;
+    }
+  });
 }
 
 export async function deleteLookup(db: Db, actor: Actor, id: string): Promise<void> {
-  assertCan(actor, "build");
-  const current = await getLookup(db, actor, id);
-  const active = (await lookupUsage(db, actor.orgId, current.name)).filter((u) => u.status === "active");
-  if (active.length)
-    throw new InvalidStateError(
-      `"${current.name}" is used by active integration(s): ${active.map((u) => u.name).join(", ")}. Deactivate them first.`,
-    );
-  await db.delete(lookups).where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const current = await getLookup(db, actor, id);
+    const active = (await lookupUsage(db, actor.orgId, current.name)).filter((u) => u.status === "active");
+    if (active.length)
+      throw new InvalidStateError(
+        `"${current.name}" is used by active integration(s): ${active.map((u) => u.name).join(", ")}. Deactivate them first.`,
+      );
+    await db.delete(lookups).where(and(eq(lookups.orgId, actor.orgId), eq(lookups.id, id)));
+  });
 }

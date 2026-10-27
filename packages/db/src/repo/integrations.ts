@@ -1,19 +1,21 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { nextRunAfter, ScheduleInput } from "../schedule.js";
 import { orgs } from "../schema/auth.js";
 import { projects } from "../schema/core.js";
 import { lookups } from "../schema/lookups.js";
-import { instanceSteps, instances, integrations, schedules } from "../schema/runtime.js";
+import { instanceSteps, instances, integrationPlans, integrations, schedules } from "../schema/runtime.js";
+import { asSystem, asTenant, refuse } from "../tenancy.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { connectionIndex } from "./connections.js";
 import { emitEvent } from "./events.js";
 import { toIdentifier } from "./projects.js";
 
 export type Integration = typeof integrations.$inferSelect;
+export type IntegrationPlan = typeof integrationPlans.$inferSelect;
 export type Schedule = typeof schedules.$inferSelect;
 
 export const NewIntegration = z.object({
@@ -55,78 +57,87 @@ async function check(db: Db, orgId: string, definition: unknown) {
 }
 
 export async function listIntegrations(db: Db, actor: Actor, opts: { projectId?: string } = {}) {
-  assertCan(actor, "read");
-  return db
-    .select({
-      id: integrations.id,
-      name: integrations.name,
-      identifier: integrations.identifier,
-      version: integrations.version,
-      style: integrations.style,
-      status: integrations.status,
-      projectId: integrations.projectId,
-      projectName: projects.name,
-      updatedAt: integrations.updatedAt,
-      activatedAt: integrations.activatedAt,
-    })
-    .from(integrations)
-    .innerJoin(projects, eq(projects.id, integrations.projectId))
-    .where(
-      and(eq(integrations.orgId, actor.orgId), opts.projectId ? eq(integrations.projectId, opts.projectId) : undefined),
-    )
-    .orderBy(desc(integrations.updatedAt));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    return db
+      .select({
+        id: integrations.id,
+        name: integrations.name,
+        identifier: integrations.identifier,
+        version: integrations.version,
+        style: integrations.style,
+        status: integrations.status,
+        projectId: integrations.projectId,
+        projectName: projects.name,
+        updatedAt: integrations.updatedAt,
+        activatedAt: integrations.activatedAt,
+      })
+      .from(integrations)
+      .innerJoin(projects, eq(projects.id, integrations.projectId))
+      .where(
+        and(
+          eq(integrations.orgId, actor.orgId),
+          opts.projectId ? eq(integrations.projectId, opts.projectId) : undefined,
+        ),
+      )
+      .orderBy(desc(integrations.updatedAt));
+  });
 }
 
 export async function getIntegration(db: Db, actor: Actor, id: string) {
-  assertCan(actor, "read");
-  const [row] = await db
-    .select({ integration: integrations, projectName: projects.name, schedule: schedules })
-    .from(integrations)
-    .innerJoin(projects, eq(projects.id, integrations.projectId))
-    .leftJoin(schedules, eq(schedules.integrationId, integrations.id))
-    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
-  if (!row) throw new NotFoundError("Integration");
-  return { ...row.integration, projectName: row.projectName, schedule: row.schedule };
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const [row] = await db
+      .select({ integration: integrations, projectName: projects.name, schedule: schedules })
+      .from(integrations)
+      .innerJoin(projects, eq(projects.id, integrations.projectId))
+      .leftJoin(schedules, eq(schedules.integrationId, integrations.id))
+      .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
+    if (!row) throw new NotFoundError("Integration");
+    return { ...row.integration, projectName: row.projectName, schedule: row.schedule };
+  });
 }
 
 export async function createIntegration(db: Db, actor: Actor, input: NewIntegration): Promise<Integration> {
-  assertCan(actor, "build");
-  const data = NewIntegration.parse(input);
-  const [project] = await db
-    .select({ id: projects.id })
-    .from(projects)
-    .where(and(eq(projects.orgId, actor.orgId), eq(projects.id, data.projectId)));
-  if (!project) throw new NotFoundError("Project");
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const data = NewIntegration.parse(input);
+    const [project] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.orgId, actor.orgId), eq(projects.id, data.projectId)));
+    if (!project) throw new NotFoundError("Project");
 
-  const checked = await check(db, actor.orgId, data.definition ?? emptyFlow(data.style));
-  const identifier = data.identifier ?? toIdentifier(data.name);
-  const [row] = await db
-    .insert(integrations)
-    .values({
+    const checked = await check(db, actor.orgId, data.definition ?? emptyFlow(data.style));
+    const identifier = data.identifier ?? toIdentifier(data.name);
+    const [row] = await db
+      .insert(integrations)
+      .values({
+        orgId: actor.orgId,
+        projectId: data.projectId,
+        name: data.name,
+        identifier,
+        style: data.style,
+        definition: checked.definition,
+        definitionHash: checked.hash,
+        validationErrors: checked.errors,
+        status: checked.status,
+        createdBy: actor.userId,
+      })
+      .onConflictDoNothing({ target: [integrations.orgId, integrations.identifier, integrations.version] })
+      .returning();
+    if (!row) throw new ConflictError(`An integration with the identifier ${identifier} already exists.`);
+    await emitEvent(db, {
       orgId: actor.orgId,
-      projectId: data.projectId,
-      name: data.name,
-      identifier,
-      style: data.style,
-      definition: checked.definition,
-      definitionHash: checked.hash,
-      validationErrors: checked.errors,
-      status: checked.status,
-      createdBy: actor.userId,
-    })
-    .onConflictDoNothing({ target: [integrations.orgId, integrations.identifier, integrations.version] })
-    .returning();
-  if (!row) throw new ConflictError(`An integration with the identifier ${identifier} already exists.`);
-  await emitEvent(db, {
-    orgId: actor.orgId,
-    type: "integration.created",
-    subjectType: "integration",
-    subjectId: row.id,
-    summary: `Integration "${row.name}" was created.`,
-    path: `/integrations/${row.id}`,
-    data: { identifier: row.identifier, style: row.style, by: actor.userId },
+      type: "integration.created",
+      subjectType: "integration",
+      subjectId: row.id,
+      summary: `Integration "${row.name}" was created.`,
+      path: `/integrations/${row.id}`,
+      data: { identifier: row.identifier, style: row.style, by: actor.userId },
+    });
+    return row;
   });
-  return row;
 }
 
 /**
@@ -135,43 +146,45 @@ export async function createIntegration(db: Db, actor: Actor, input: NewIntegrat
  * Invalid documents are saved as drafts with their errors, so work is never lost.
  */
 export async function saveDefinition(db: Db, actor: Actor, id: string, definition: unknown, baseHash: string) {
-  assertCan(actor, "build");
-  const current = await getIntegration(db, actor, id);
-  if (current.status === "active") {
-    throw new InvalidStateError("Deactivate the integration before editing it.");
-  }
-  if (current.definitionHash !== baseHash) {
-    throw new ConflictError("This integration changed since you opened it. Reload to see the latest version.");
-  }
-  const checked = await check(db, actor.orgId, definition);
-  if ((definition as FlowDoc)?.style !== current.style) {
-    checked.errors.unshift({
-      code: "schema",
-      message: `This is a ${current.style} integration; "style" must stay "${current.style}".`,
-      path: ["style"],
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const current = await getIntegration(db, actor, id);
+    if (current.status === "active") {
+      throw new InvalidStateError("Deactivate the integration before editing it.");
+    }
+    if (current.definitionHash !== baseHash) {
+      throw new ConflictError("This integration changed since you opened it. Reload to see the latest version.");
+    }
+    const checked = await check(db, actor.orgId, definition);
+    if ((definition as FlowDoc)?.style !== current.style) {
+      checked.errors.unshift({
+        code: "schema",
+        message: `This is a ${current.style} integration; "style" must stay "${current.style}".`,
+        path: ["style"],
+      });
+      checked.status = "draft";
+    }
+    const [row] = await db
+      .update(integrations)
+      .set({
+        definition: checked.definition,
+        definitionHash: checked.hash,
+        validationErrors: checked.errors,
+        status: checked.status,
+      })
+      .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)))
+      .returning();
+    await emitEvent(db, {
+      orgId: actor.orgId,
+      type: "integration.updated",
+      subjectType: "integration",
+      subjectId: id,
+      summary: `"${current.name}" was saved${checked.errors.length ? ` with ${checked.errors.length} problem(s)` : ""}.`,
+      path: `/integrations/${id}`,
+      data: { problems: checked.errors.length },
     });
-    checked.status = "draft";
-  }
-  const [row] = await db
-    .update(integrations)
-    .set({
-      definition: checked.definition,
-      definitionHash: checked.hash,
-      validationErrors: checked.errors,
-      status: checked.status,
-    })
-    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)))
-    .returning();
-  await emitEvent(db, {
-    orgId: actor.orgId,
-    type: "integration.updated",
-    subjectType: "integration",
-    subjectId: id,
-    summary: `"${current.name}" was saved${checked.errors.length ? ` with ${checked.errors.length} problem(s)` : ""}.`,
-    path: `/integrations/${id}`,
-    data: { problems: checked.errors.length },
+    return { integration: row!, errors: checked.errors, warnings: checked.warnings };
   });
-  return { integration: row!, errors: checked.errors, warnings: checked.warnings };
 }
 
 export async function setSchedule(
@@ -180,17 +193,19 @@ export async function setSchedule(
   integrationId: string,
   input: ScheduleInput,
 ): Promise<Schedule> {
-  assertCan(actor, "build");
-  const s = ScheduleInput.parse(input);
-  const integration = await getIntegration(db, actor, integrationId);
-  if (integration.style !== "scheduled") throw new InvalidStateError("Only scheduled integrations have a schedule.");
-  const nextRunAt = integration.status === "active" ? nextRunAfter(s, new Date()) : null;
-  const [row] = await db
-    .insert(schedules)
-    .values({ orgId: actor.orgId, integrationId, ...s, nextRunAt })
-    .onConflictDoUpdate({ target: schedules.integrationId, set: { ...s, nextRunAt, status: "active" } })
-    .returning();
-  return row!;
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const s = ScheduleInput.parse(input);
+    const integration = await getIntegration(db, actor, integrationId);
+    if (integration.style !== "scheduled") throw new InvalidStateError("Only scheduled integrations have a schedule.");
+    const nextRunAt = integration.status === "active" ? nextRunAfter(s, new Date()) : null;
+    const [row] = await db
+      .insert(schedules)
+      .values({ orgId: actor.orgId, integrationId, ...s, nextRunAt })
+      .onConflictDoUpdate({ target: schedules.integrationId, set: { ...s, nextRunAt, status: "active" } })
+      .returning();
+    return row!;
+  });
 }
 
 export async function activateIntegration(
@@ -199,64 +214,124 @@ export async function activateIntegration(
   id: string,
   opts: { tracingLevel?: "production" | "audit" | "debug" } = {},
 ): Promise<Integration> {
-  assertCan(actor, "operate");
-  const current = await getIntegration(db, actor, id);
-  if (current.status === "active") return current;
-  // Re-validate: connections may have changed since the last save.
-  const checked = await check(db, actor.orgId, current.definition);
-  if (checked.errors.length > 0 || checked.status !== "configured") {
-    await db
-      .update(integrations)
-      .set({ validationErrors: checked.errors, status: "draft" })
-      .where(eq(integrations.id, id));
-    throw new InvalidStateError(
-      checked.errors.length > 0
-        ? `Fix ${checked.errors.length} problem(s) before activating: ${checked.errors[0]?.message}`
-        : "Add at least one step before activating.",
-    );
-  }
-  if (current.style === "scheduled" && !current.schedule)
-    throw new InvalidStateError("Set a schedule before activating.");
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "operate");
+    const current = await getIntegration(db, actor, id);
+    if (current.status === "active") return current;
+    // Re-validate: connections may have changed since the last save.
+    const checked = await check(db, actor.orgId, current.definition);
+    if (checked.errors.length > 0 || checked.status !== "configured") {
+      await db
+        .update(integrations)
+        .set({ validationErrors: checked.errors, status: "draft" })
+        .where(eq(integrations.id, id));
+      return refuse(
+        new InvalidStateError(
+          checked.errors.length > 0
+            ? `Fix ${checked.errors.length} problem(s) before activating: ${checked.errors[0]?.message}`
+            : "Add at least one step before activating.",
+        ),
+      );
+    }
+    if (current.style === "scheduled" && !current.schedule)
+      throw new InvalidStateError("Set a schedule before activating.");
 
-  const [row] = await db
-    .update(integrations)
-    .set({
-      status: "active",
-      activatedAt: new Date(),
-      activatedBy: actor.userId,
-      tracingLevel: opts.tracingLevel ?? current.tracingLevel,
-    })
-    .where(eq(integrations.id, id))
-    .returning();
-  if (current.schedule) {
-    await db
-      .update(schedules)
-      .set({ status: "active", nextRunAt: nextRunAfter(current.schedule, new Date()) })
-      .where(eq(schedules.id, current.schedule.id));
-  }
-  await emitEvent(db, {
-    orgId: actor.orgId,
-    type: "integration.activated",
-    subjectType: "integration",
-    subjectId: id,
-    summary: `"${current.name}" is now active.`,
-    path: `/integrations/${id}`,
-    data: { tracingLevel: row!.tracingLevel },
+    const [row] = await db
+      .update(integrations)
+      .set({
+        status: "active",
+        activatedAt: new Date(),
+        activatedBy: actor.userId,
+        tracingLevel: opts.tracingLevel ?? current.tracingLevel,
+        activePlanId: await planFor(db, actor, current, opts.tracingLevel ?? current.tracingLevel),
+      })
+      .where(eq(integrations.id, id))
+      .returning();
+    await announceRoute(db, row!);
+    if (current.schedule) {
+      await db
+        .update(schedules)
+        .set({ status: "active", nextRunAt: nextRunAfter(current.schedule, new Date()) })
+        .where(eq(schedules.id, current.schedule.id));
+    }
+    await emitEvent(db, {
+      orgId: actor.orgId,
+      type: "integration.activated",
+      subjectType: "integration",
+      subjectId: id,
+      summary: `"${current.name}" is now active.`,
+      path: `/integrations/${id}`,
+      data: { tracingLevel: row!.tracingLevel },
+    });
+    return row!;
   });
-  return row!;
 }
 
 export async function deactivateIntegration(db: Db, actor: Actor, id: string): Promise<Integration> {
-  assertCan(actor, "operate");
-  const current = await getIntegration(db, actor, id);
-  const [row] = await db
-    .update(integrations)
-    .set({ status: current.validationErrors.length === 0 ? "configured" : "draft" })
-    .where(eq(integrations.id, id))
-    .returning();
-  if (current.schedule)
-    await db.update(schedules).set({ nextRunAt: null }).where(eq(schedules.id, current.schedule.id));
-  return row!;
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "operate");
+    const current = await getIntegration(db, actor, id);
+    const [row] = await db
+      .update(integrations)
+      .set({ status: current.validationErrors.length === 0 ? "configured" : "draft", activePlanId: null })
+      .where(eq(integrations.id, id))
+      .returning();
+    if (current.schedule)
+      await db.update(schedules).set({ nextRunAt: null }).where(eq(schedules.id, current.schedule.id));
+    await announceRoute(db, row!);
+    return row!;
+  });
+}
+
+/**
+ * The immutable plan for what is being activated: an existing one when the
+ * same definition and tracing level ran before, otherwise a new snapshot.
+ */
+async function planFor(
+  db: Db,
+  actor: Actor,
+  current: Integration,
+  tracingLevel: Integration["tracingLevel"],
+): Promise<string> {
+  const [existing] = await db
+    .select({ id: integrationPlans.id })
+    .from(integrationPlans)
+    .where(
+      and(
+        eq(integrationPlans.integrationId, current.id),
+        eq(integrationPlans.definitionHash, current.definitionHash),
+        eq(integrationPlans.tracingLevel, tracingLevel),
+      ),
+    );
+  if (existing) return existing.id;
+  const [plan] = await db
+    .insert(integrationPlans)
+    .values({
+      orgId: current.orgId,
+      integrationId: current.id,
+      version: current.version,
+      definitionHash: current.definitionHash,
+      definition: current.definition,
+      tracingLevel,
+      createdBy: actor.userId,
+    })
+    .returning({ id: integrationPlans.id });
+  return plan!.id;
+}
+
+/** Stream engines cache trigger routes; this tells them one changed (delivered on commit). */
+export const ROUTES_CHANNEL = "oicr_routes";
+async function announceRoute(db: Db, i: { id: string; orgId: string; identifier: string }): Promise<void> {
+  const payload = JSON.stringify({ integrationId: i.id, orgId: i.orgId, identifier: i.identifier });
+  await db.execute(sql`select pg_notify(${ROUTES_CHANNEL}, ${payload})`);
+}
+
+/** For the data plane: a plan by id, within its tenant. */
+export async function loadPlan(db: Db, orgId: string, planId: string): Promise<IntegrationPlan | null> {
+  return asTenant(db, orgId, async (db) => {
+    const [plan] = await db.select().from(integrationPlans).where(eq(integrationPlans.id, planId));
+    return plan ?? null;
+  });
 }
 
 export const hashTriggerToken = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -275,25 +350,40 @@ export function verifyTriggerToken(presented: string, hash: string | null): bool
  * once; issuing another replaces it.
  */
 export async function createTriggerToken(db: Db, actor: Actor, id: string): Promise<string> {
-  assertCan(actor, "operate");
-  await getIntegration(db, actor, id);
-  const token = `oicr_t_${randomBytes(24).toString("base64url")}`;
-  await db
-    .update(integrations)
-    .set({ triggerTokenHash: hashTriggerToken(token), triggerTokenHint: token.slice(-4), triggerTokenCiphertext: null })
-    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
-  return token;
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "operate");
+    await getIntegration(db, actor, id);
+    const token = `oicr_t_${randomBytes(24).toString("base64url")}`;
+    await db
+      .update(integrations)
+      .set({
+        triggerTokenHash: hashTriggerToken(token),
+        triggerTokenHint: token.slice(-4),
+        triggerTokenCiphertext: null,
+      })
+      .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
+    await announceRoute(db, await getIntegration(db, actor, id));
+    return token;
+  });
 }
 
 /** For the trigger endpoint: the active integration behind /t/{org}/{identifier}. */
+/**
+ * For the trigger endpoint: the active integration behind /t/{org}/{identifier},
+ * with the plan it runs and its token hash. Cross-tenant by design (routing a
+ * URL); everything after runs in the integration's tenant.
+ */
 export async function findActiveTrigger(db: Db, orgSlug: string, identifier: string) {
-  const [row] = await db
-    .select({ integration: integrations })
-    .from(integrations)
-    .innerJoin(orgs, eq(orgs.id, integrations.orgId))
-    .where(and(eq(orgs.slug, orgSlug), eq(integrations.identifier, identifier), eq(integrations.status, "active")));
-  if (!row) return null;
-  return { integration: row.integration, tokenHash: row.integration.triggerTokenHash };
+  return asSystem(db, "findActiveTrigger", async (db) => {
+    const [row] = await db
+      .select({ integration: integrations, plan: integrationPlans })
+      .from(integrations)
+      .innerJoin(orgs, eq(orgs.id, integrations.orgId))
+      .leftJoin(integrationPlans, eq(integrationPlans.id, integrations.activePlanId))
+      .where(and(eq(orgs.slug, orgSlug), eq(integrations.identifier, identifier), eq(integrations.status, "active")));
+    if (!row) return null;
+    return { integration: row.integration, plan: row.plan, tokenHash: row.integration.triggerTokenHash };
+  });
 }
 
 export interface Samples {
@@ -305,52 +395,56 @@ export interface Samples {
 
 /** Sample data for the mapper. Production tracing keeps no payloads, so runs may give none. */
 export async function getSamples(db: Db, actor: Actor, id: string): Promise<Samples> {
-  const integration = await getIntegration(db, actor, id);
-  const recent = await db
-    .select({ id: instances.id, input: instances.input })
-    .from(instances)
-    .where(and(eq(instances.orgId, actor.orgId), eq(instances.integrationId, id)))
-    .orderBy(desc(instances.createdAt))
-    .limit(5);
-  const run: Samples["run"] = { steps: {} };
-  const withInput = recent.find((r) => r.input !== null && r.input !== undefined);
-  if (withInput) {
-    run.trigger = withInput.input;
-    run.runId = withInput.id;
-  }
-  if (recent.length) {
-    const steps = await db
-      .select({ instanceId: instanceSteps.instanceId, stepId: instanceSteps.stepId, output: instanceSteps.output })
-      .from(instanceSteps)
-      .where(
-        and(
-          inArray(
-            instanceSteps.instanceId,
-            recent.map((r) => r.id),
+  return asTenant(db, actor.orgId, async (db) => {
+    const integration = await getIntegration(db, actor, id);
+    const recent = await db
+      .select({ id: instances.id, input: instances.input })
+      .from(instances)
+      .where(and(eq(instances.orgId, actor.orgId), eq(instances.integrationId, id)))
+      .orderBy(desc(instances.createdAt))
+      .limit(5);
+    const run: Samples["run"] = { steps: {} };
+    const withInput = recent.find((r) => r.input !== null && r.input !== undefined);
+    if (withInput) {
+      run.trigger = withInput.input;
+      run.runId = withInput.id;
+    }
+    if (recent.length) {
+      const steps = await db
+        .select({ instanceId: instanceSteps.instanceId, stepId: instanceSteps.stepId, output: instanceSteps.output })
+        .from(instanceSteps)
+        .where(
+          and(
+            inArray(
+              instanceSteps.instanceId,
+              recent.map((r) => r.id),
+            ),
+            isNotNull(instanceSteps.output),
           ),
-          isNotNull(instanceSteps.output),
-        ),
-      )
-      .orderBy(instanceSteps.seq);
-    // Newest run first, then the first record of each step (first loop iteration).
-    for (const r of recent)
-      for (const s of steps) if (s.instanceId === r.id && !(s.stepId in run.steps)) run.steps[s.stepId] = s.output;
-  }
-  return { pasted: integration.samples ?? {}, run };
+        )
+        .orderBy(instanceSteps.seq);
+      // Newest run first, then the first record of each step (first loop iteration).
+      for (const r of recent)
+        for (const s of steps) if (s.instanceId === r.id && !(s.stepId in run.steps)) run.steps[s.stepId] = s.output;
+    }
+    return { pasted: integration.samples ?? {}, run };
+  });
 }
 
 /** Saves (or with null, removes) a pasted sample. Does not change the definition. */
 export async function setSample(db: Db, actor: Actor, id: string, source: string, value: unknown): Promise<void> {
-  assertCan(actor, "build");
-  if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(source)) throw new ConflictError("Not a valid source name.");
-  if (JSON.stringify(value ?? null).length > 256_000)
-    throw new ConflictError("That sample is too large (256 KB at most).");
-  const current = await getIntegration(db, actor, id);
-  const samples = { ...(current.samples ?? {}) };
-  if (value === null || value === undefined) delete samples[source];
-  else samples[source] = value;
-  await db
-    .update(integrations)
-    .set({ samples })
-    .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(source)) throw new ConflictError("Not a valid source name.");
+    if (JSON.stringify(value ?? null).length > 256_000)
+      throw new ConflictError("That sample is too large (256 KB at most).");
+    const current = await getIntegration(db, actor, id);
+    const samples = { ...(current.samples ?? {}) };
+    if (value === null || value === undefined) delete samples[source];
+    else samples[source] = value;
+    await db
+      .update(integrations)
+      .set({ samples })
+      .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
+  });
 }

@@ -18,6 +18,37 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  apps/stream:
+    dependencies:
+      '@oicr/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@oicr/platform':
+        specifier: workspace:*
+        version: link:../../packages/platform
+      '@oicr/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      drizzle-orm:
+        specifier: ^0.45.4
+        version: 0.45.4(@opentelemetry/api@1.10.0)(kysely@0.29.7)(pg@8.23.1)(postgres@3.4.9)
+    devDependencies:
+      '@oicr/vault':
+        specifier: workspace:*
+        version: link:../../packages/vault
+      '@types/node':
+        specifier: ^22
+        version: 22.20.5
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@opentelemetry/api@1.10.0)(@types/node@22.20.5)(vite@8.3.5(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   apps/web:
     dependencies:
       '@modelcontextprotocol/sdk':

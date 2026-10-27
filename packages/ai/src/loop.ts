@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import {
   type Actor,
   appendAiMessage,
+  asTenant,
   claimAiSession,
   type Db,
   emitEvent,
@@ -69,7 +70,11 @@ async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "er
     status: "idle" | "waiting" | "error",
     extra: { pending?: PendingQuestion; error?: string } = {},
   ) => {
-    await releaseAiSession(db, sessionId, { status, pending: extra.pending ?? null, lastError: extra.error ?? null });
+    await releaseAiSession(db, actor, sessionId, {
+      status,
+      pending: extra.pending ?? null,
+      lastError: extra.error ?? null,
+    });
     if (extra.error) emit({ type: "error", message: extra.error });
     emit({ type: "done", status });
     return status;
@@ -87,10 +92,9 @@ async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "er
         { type: "tool_result", tool_use_id: session.pending.toolUseId, content: opts.text },
       ];
     } else if (history.length === 0) {
-      const [project] = await db
-        .select({ name: projects.name })
-        .from(projects)
-        .where(eq(projects.id, session.projectId));
+      const [project] = await asTenant(db, actor.orgId, (db) =>
+        db.select({ name: projects.name }).from(projects).where(eq(projects.id, session.projectId)),
+      );
       const integration = session.integrationId ? await getIntegration(db, actor, session.integrationId) : null;
       const preamble = contextPreamble({
         projectName: project?.name ?? "",
@@ -105,7 +109,7 @@ async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "er
       userContent = [{ type: "text", text: opts.text }];
     }
     history.push({ role: "user", content: userContent } as MessageParam);
-    await appendAiMessage(db, sessionId, { role: "user", content: userContent as unknown[] });
+    await appendAiMessage(db, actor, sessionId, { role: "user", content: userContent as unknown[] });
 
     const ctx: ToolContext = { db, actor, session, failedProposals: 0, emit };
     let parseRetries = 0;
@@ -154,7 +158,7 @@ async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "er
 
       // Persist exactly what came back: thinking blocks stay valid only on an unchanged history.
       history.push({ role: "assistant", content: message.content } as MessageParam);
-      await appendAiMessage(db, sessionId, {
+      await appendAiMessage(db, actor, sessionId, {
         role: "assistant",
         content: message.content as unknown[],
         model: message.model,
@@ -235,7 +239,7 @@ async function runTurnInner(opts: TurnOptions): Promise<"idle" | "waiting" | "er
         return await finish("waiting", { pending });
       }
       history.push({ role: "user", content: results } as MessageParam);
-      await appendAiMessage(db, sessionId, { role: "user", content: results });
+      await appendAiMessage(db, actor, sessionId, { role: "user", content: results });
     }
     return await finish("error", {
       error: "The AI took too many steps on this message. Send it again, or ask for a smaller change.",

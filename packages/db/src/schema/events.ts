@@ -31,6 +31,7 @@ export const EVENT_TYPES = [
   "ai.change.proposed",
   "ai.change.accepted",
   "ai.change.rejected",
+  "connection.circuit_open",
   "channel.test",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
@@ -100,6 +101,10 @@ export const deliveries = pgTable(
   "deliveries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Copied from the parent row, so row-level security can check it directly. */
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
     eventId: bigint("event_id", { mode: "number" })
       .notNull()
       .references(() => events.id, { onDelete: "cascade" }),

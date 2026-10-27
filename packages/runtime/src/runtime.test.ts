@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import {
   type Actor,
   activateIntegration,
+  asTenant,
   claimDueSchedules,
   connections,
   createConnection,
@@ -13,14 +14,17 @@ import {
   createLookup,
   createProject,
   createTriggerToken,
+  deactivateIntegration,
   deleteLookup,
   encryptSecret,
   failStaleInstances,
   findActiveTrigger,
   getInstance,
+  getIntegration,
   getSamples,
   instances,
   integrations,
+  listEvents,
   listInstances,
   memberships,
   moveLegacySecrets,
@@ -44,6 +48,8 @@ import { executeInstance, startRun } from "./index.js";
 
 const url = process.env.TEST_DATABASE_URL;
 const db = url ? createDb(url) : null;
+
+let downCalls = 0;
 
 describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
   const createInstanceFor = async (integration: {
@@ -69,6 +75,10 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
       req.on("end", () => {
         if (req.headers["x-api-key"] !== "k-123") return res.writeHead(401).end();
         if (req.url === "/health") return res.writeHead(200).end("ok");
+        if (req.url === "/down") {
+          downCalls++;
+          return res.writeHead(503).end("down");
+        }
         if (req.url === "/orders" && req.method === "GET") {
           res.writeHead(200, { "content-type": "application/json" });
           return res.end(
@@ -126,7 +136,9 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(c.hasSecret).toBe(true);
     expect(JSON.stringify(c)).not.toContain("k-123");
     // The credential is not in the connections table at all.
-    const [raw] = await db!.execute<{ row: string }>(sql`select c::text as row from connections c where id = ${c.id}`);
+    const [raw] = await asTenant(db!, actor.orgId, (db) =>
+      db.execute<{ row: string }>(sql`select c::text as row from connections c where id = ${c.id}`),
+    );
     expect(raw!.row).not.toContain("k-123");
     expect(await testConnection(db!, actor, c.id)).toMatchObject({ ok: true });
 
@@ -211,14 +223,18 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     await expect(saveDefinition(db!, actor, integ.id, definition, active.definitionHash)).rejects.toThrow(/Deactivate/);
 
     // The scheduler claims it once it is due, exactly once.
-    await db!
-      .update(schedules)
-      .set({ nextRunAt: new Date(Date.now() - 1000) })
-      .where(eq(schedules.integrationId, integ.id));
+    await asTenant(db!, actor.orgId, (db) =>
+      db
+        .update(schedules)
+        .set({ nextRunAt: new Date(Date.now() - 1000) })
+        .where(eq(schedules.integrationId, integ.id)),
+    );
     const [a, b] = await Promise.all([claimDueSchedules(db!), claimDueSchedules(db!)]);
     const claimed = [...a, ...b].filter((x) => x.integration.id === integ.id);
     expect(claimed).toHaveLength(1);
-    const [sched] = await db!.select().from(schedules).where(eq(schedules.integrationId, integ.id));
+    const [sched] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(schedules).where(eq(schedules.integrationId, integ.id)),
+    );
     expect(sched!.nextRunAt!.getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
 
     // Queue path is the worker's job; here we create and execute directly.
@@ -344,16 +360,20 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
   });
 
   it("does not run an instance twice and fails stale runs", async () => {
-    const [row] = await db!.select().from(instances).limit(1);
+    const [row] = await asTenant(db!, actor.orgId, (db) => db.select().from(instances).limit(1));
     const again = await executeInstance(db!, row!.id);
     expect(again.result).toBeNull();
 
-    await db!
-      .update(instances)
-      .set({ status: "running", startedAt: new Date(Date.now() - 3_600_000) })
-      .where(eq(instances.id, row!.id));
+    await asTenant(db!, actor.orgId, (db) =>
+      db
+        .update(instances)
+        .set({ status: "running", startedAt: new Date(Date.now() - 3_600_000) })
+        .where(eq(instances.id, row!.id)),
+    );
     expect(await failStaleInstances(db!, 600_000)).toBeGreaterThanOrEqual(1);
-    const [after] = await db!.select().from(instances).where(eq(instances.id, row!.id));
+    const [after] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(instances).where(eq(instances.id, row!.id)),
+    );
     expect(after?.errorCode).toBe("worker_lost");
   });
   it("translates with lookups at run time, guards lookups in use, and gives the mapper samples", async () => {
@@ -433,37 +453,43 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
   it("moves pre-v2 credentials out of the database, and can be run again", async () => {
     const { memoryStore } = await import("@oicr/vault");
     const store = memoryStore();
-    const [legacy] = await db!
-      .insert(connections)
-      .values({
-        orgId: actor.orgId,
-        name: "Old",
-        identifier: `old_${Date.now()}`,
-        adapter: "rest",
-        role: "invoke",
-        properties: { baseUrl: base },
-        authType: "api_key",
-        secretCiphertext: encryptSecret({ apiKey: "old-key" }),
-      })
-      .returning();
-    const [chan] = await db!
-      .insert(notificationChannels)
-      .values({
-        orgId: actor.orgId,
-        kind: "webhook",
-        name: "Old hook",
-        configCiphertext: encryptSecret({ url: "https://hooks.example.com/x", secret: "s".repeat(20) }),
-      })
-      .returning();
+    const [legacy] = await asTenant(db!, actor.orgId, (db) =>
+      db
+        .insert(connections)
+        .values({
+          orgId: actor.orgId,
+          name: "Old",
+          identifier: `old_${Date.now()}`,
+          adapter: "rest",
+          role: "invoke",
+          properties: { baseUrl: base },
+          authType: "api_key",
+          secretCiphertext: encryptSecret({ apiKey: "old-key" }),
+        })
+        .returning(),
+    );
+    const [chan] = await asTenant(db!, actor.orgId, (db) =>
+      db
+        .insert(notificationChannels)
+        .values({
+          orgId: actor.orgId,
+          kind: "webhook",
+          name: "Old hook",
+          configCiphertext: encryptSecret({ url: "https://hooks.example.com/x", secret: "s".repeat(20) }),
+        })
+        .returning(),
+    );
     const integ = await createIntegration(db!, actor, {
       projectId,
       name: `Legacy ${Date.now()}`,
       style: "application",
     });
-    await db!
-      .update(integrations)
-      .set({ triggerTokenCiphertext: encryptSecret("oicr_t_legacytoken1234") })
-      .where(eq(integrations.id, integ.id));
+    await asTenant(db!, actor.orgId, (db) =>
+      db
+        .update(integrations)
+        .set({ triggerTokenCiphertext: encryptSecret("oicr_t_legacytoken1234") })
+        .where(eq(integrations.id, integ.id)),
+    );
 
     const r = await moveLegacySecrets(db!, store);
     // Rows left by earlier test runs were encrypted with other keys: kept, reported as permanent.
@@ -473,11 +499,17 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(await store.get({ tenant: actor.orgId, kind: "channel", id: chan!.id })).toMatchObject({
       url: "https://hooks.example.com/x",
     });
-    const [c] = await db!.select().from(connections).where(eq(connections.id, legacy!.id));
+    const [c] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(connections).where(eq(connections.id, legacy!.id)),
+    );
     expect(c).toMatchObject({ secretCiphertext: null, hasSecret: true });
-    const [ch] = await db!.select().from(notificationChannels).where(eq(notificationChannels.id, chan!.id));
+    const [ch] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(notificationChannels).where(eq(notificationChannels.id, chan!.id)),
+    );
     expect(ch).toMatchObject({ configCiphertext: null, target: "https://hooks.example.com/x" });
-    const [i] = await db!.select().from(integrations).where(eq(integrations.id, integ.id));
+    const [i] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(integrations).where(eq(integrations.id, integ.id)),
+    );
     expect(i!.triggerTokenCiphertext).toBeNull();
     expect(verifyTriggerToken("oicr_t_legacytoken1234", i!.triggerTokenHash)).toBe(true);
     expect(i!.triggerTokenHint).toBe("1234");
@@ -485,5 +517,72 @@ describe.skipIf(!url)("runtime (Postgres + mock API)", () => {
     expect(await moveLegacySecrets(db!, store)).toMatchObject({ connections: 0, channels: 0, triggerTokens: 0 });
     const undecryptable = await moveLegacySecrets(db!, store);
     expect(undecryptable.failed.map((f) => f.id)).not.toContain(legacy!.id);
+  });
+  it("runs the plan a run was created with, even after the integration changes", async () => {
+    const def = (v: number) => ({
+      schemaVersion: 1,
+      style: "application",
+      trigger: { id: "t", type: "http", sync: false },
+      steps: [{ id: "m", type: "map", expression: `{ "v": ${v} }` }],
+    });
+    const integ = await createIntegration(db!, actor, {
+      projectId,
+      name: `Plans ${Date.now()}`,
+      style: "application",
+      definition: def(1),
+    });
+    const v1 = await activateIntegration(db!, actor, integ.id, { tracingLevel: "debug" });
+    expect(v1.activePlanId).toBeTruthy();
+    const queued = await createInstanceFor(v1);
+    expect(queued.planId).toBe(v1.activePlanId);
+
+    await deactivateIntegration(db!, actor, integ.id);
+    const fresh = await getIntegration(db!, actor, integ.id);
+    expect(fresh.activePlanId).toBeNull();
+    const saved = await saveDefinition(db!, actor, integ.id, def(2), fresh.definitionHash);
+    const v2 = await activateIntegration(db!, actor, integ.id, { tracingLevel: "debug" });
+    expect(v2.activePlanId).not.toBe(v1.activePlanId);
+    expect(saved.integration.definitionHash).not.toBe(v1.definitionHash);
+
+    await executeInstance(db!, queued.id);
+    const old = await getInstance(db!, actor, queued.id);
+    expect(old.steps.find((st) => st.stepId === "m")?.output).toEqual({ v: 1 });
+    const now = await executeInstance(db!, (await createInstanceFor(v2)).id);
+    const latest = await getInstance(db!, actor, now.instance.id);
+    expect(latest.steps.find((st) => st.stepId === "m")?.output).toEqual({ v: 2 });
+  });
+
+  it("pauses calls to a failing connection, per tenant, and announces it", async () => {
+    await createConnection(db!, actor, {
+      name: "Flaky",
+      identifier: "flaky_api",
+      adapter: "rest",
+      properties: { baseUrl: base },
+      authType: "api_key",
+      secret: { apiKey: "k-123" },
+    });
+    const integ = await createIntegration(db!, actor, {
+      projectId,
+      name: `Breaker ${Date.now()}`,
+      style: "application",
+      definition: {
+        schemaVersion: 1,
+        style: "application",
+        trigger: { id: "t", type: "http", sync: true },
+        steps: [{ id: "get", type: "invoke", connection: "flaky_api", operation: "GET /down" }],
+      },
+    });
+    const active = await activateIntegration(db!, actor, integ.id);
+    downCalls = 0;
+    for (let i = 0; i < 5; i++) {
+      const r = await startRun(db!, active, { input: {}, kind: "manual", sync: true });
+      expect(r.error?.code).toBe("http_503");
+    }
+    const paused = await startRun(db!, active, { input: {}, kind: "manual", sync: true });
+    expect(paused.error?.code).toBe("circuit_open");
+    expect(downCalls).toBe(5); // the sixth never reached the API
+    await expect
+      .poll(async () => (await listEvents(db!, actor, { types: ["connection.circuit_open"] })).events.length)
+      .toBeGreaterThan(0);
   });
 });

@@ -135,12 +135,74 @@ document records the decisions, the target topology, and the order in which it i
 - Not yet: deleting a whole tenant's secrets on offboarding (needs a recursive KV list; P2 with
   tenant lifecycle), per-tenant Vault namespaces for the dedicated tier.
 
+## P2a notes (done): tenant isolation in the database
+
+- Migration 0006: `org_id` added to the child tables that lacked it (`instance_steps`,
+  `ai_messages`, `deliveries`, backfilled from their parents); every tenant table (and
+  `dev_secrets`) has `ENABLE` + `FORCE ROW LEVEL SECURITY` and one policy,
+  `oicr_can_access(org_id)`: the row's tenant must equal the transaction's `app.tenant_id`, or
+  `app.bypass_rls` must be on. Unset means no rows: reads return nothing, writes are rejected.
+- `packages/db/src/tenancy.ts`: `asTenant(db, tenant, fn)` (a short transaction with the tenant
+  set; nested calls for the same tenant join it, another tenant is refused), `asSystem(db,
+  reason, fn)` for the platform's cross-tenant jobs only (claiming due schedules, deliveries
+  and queued runs, routing a trigger URL, checking an API key, reaping stale runs, migrating
+  legacy secrets, offboarding), and `refuse(error)` for "record it, then refuse" paths (a stale
+  AI proposal, validation errors on activation) whose writes must commit. Every repository
+  function runs in one of them; external calls (connection tests, Vault) happen outside long
+  transactions.
+- Roles: policies only bind roles without superuser/BYPASSRLS, and `FORCE` makes them bind the
+  table owner too. docker compose runs migrations and the job queue as the owner and the web app
+  and worker as `oicr_app` (created by the migration when it may, given a login with
+  `APP_DB_PASSWORD`). The web app and worker check their role at start and refuse to run in
+  production when isolation would not apply. Migrations connect with `app.bypass_rls=on` to
+  backfill. pg-boss uses `QUEUE_DATABASE_URL` (it owns its schema; jobs hold run ids only).
+- The settings are transaction-local, so pooled connections never leak a tenant. They protect
+  against application bugs (a missing `WHERE org_id`), not SQL injection; queries stay
+  parameterised.
+- Offboarding: `offboardTenant` (and `node packages/db/dist/offboard.js <org>`) deletes the
+  tenant's Vault secrets (recursive KV list + delete; the platform policy gains `list` on
+  `metadata/tenants/*`), then the organization row, which cascades to all tenant data.
+- Verified: an isolation test suite (no-WHERE reads, unscoped reads/writes, cross-tenant writes,
+  mixed scopes, refusals); the whole unit and e2e suites run under enforced RLS; in docker
+  compose a second tenant gets 404 on the first tenant's connection URL, and `oicr_app` sees 0
+  rows unscoped and is refused when inserting into another tenant.
+- Kept for one more release: the emptied legacy ciphertext columns, so installs upgrading from
+  before P1 still have their credentials moved by `migrate` before the columns go.
+
+## P2b notes (done): stream engine, plans, per-tenant limits
+
+- `apps/stream`: a plain `node:http` service that owns `/t/{org}/{identifier}/…`. It keeps no
+  state between requests: routes come from a cache (single-flight loads, short TTLs, a shorter
+  one for misses) that every instance drops on `NOTIFY oicr_routes`, sent when an integration is
+  activated or deactivated or its token is replaced. Sync triggers run inline and answer with
+  the flow's response; async triggers queue the run and answer 202. Bodies are capped (413), each
+  tenant has a request rate and a concurrent-request cap from its tier (429 with `Retry-After`),
+  and there is a process-wide in-flight cap. Every request is a server span; the trace id is
+  returned in `x-trace-id` when tracing is on. `/healthz` and `/readyz` (database reachable) for
+  orchestrators; SIGTERM stops accepting and drains in-flight requests.
+- The web app's `/t/…` route only forwards to `STREAM_URL`, so existing trigger URLs keep
+  working; production ingress can send `/t/` to the stream engine directly.
+- Execution plans (migration 0007, `integration_plans`): activation stores an immutable copy of
+  the validated definition and tracing level; the integration points at it (`active_plan_id`)
+  and each run records the plan it was created with, so editing or re-activating never changes
+  a run in flight. Runs from before plans existed fall back to the definition.
+- Per-tenant limits (`tenant_limits`: tier, sync concurrency, requests per second; defaults per
+  tier from `TIER_*`). Async runs are queued with the tenant as the pg-boss group, and workers cap
+  each group's concurrent runs by tier, so one busy tenant cannot starve the others.
+- Circuit breakers in the runtime, per tenant and connection: after `BREAKER_FAILURES`
+  consecutive retryable failures calls are refused for `BREAKER_OPEN_SECONDS`, then one probe
+  is let through. Refusals are retryable step faults with a retry delay; an opening raises a
+  `connection.circuit_open` event.
+- Verified: unit tests for the route cache, limits, drain and breaker; the e2e suite runs
+  through the stream engine; in docker compose a trigger on the web address is proxied to the
+  stream service, queued, run by the worker on its plan, and a bad token gets 401.
+
 ## Build order
 
 | step | delivers |
 | --- | --- |
 | **P1 Trust foundations** ✅ | `packages/platform` (retry policy, tracing helpers, OTel bootstrap); tracing on every execution block; `packages/vault` (Vault KV v2 + dev backend); connection credentials and channel configs moved to the store; trigger tokens hashed; Vault in docker compose; migration of existing secrets |
-| P2 Stream engine + tenant isolation | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
+| **P2 Stream engine + tenant isolation** ✅ | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
 | P3 Semantic catalog | catalog and bindings model, seed bindings for Fusion, EBS, NetSuite, SAP; AI binding proposals with review; `$sem` in the mapper; compile at activation |
 | P4 Batch engine | pipeline runtime, worker-thread transforms, checkpoints, reject stream; database adapter (Postgres, Oracle, MySQL) |
 | P5 ERP connectors | Oracle Fusion REST + FBDI, NetSuite REST/SuiteTalk, SAP OData; their bulk paths for the batch engine |

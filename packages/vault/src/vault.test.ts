@@ -194,7 +194,7 @@ describe.skipIf(!realAddr)("real Vault", () => {
     await api("POST", "sys/mounts/oicr", { type: "kv", options: { version: "2" } });
     await api("PUT", "sys/policies/acl/oicr-platform", {
       policy:
-        'path "oicr/data/tenants/*" { capabilities = ["create","update","read"] }\npath "oicr/metadata/tenants/*" { capabilities = ["delete"] }',
+        'path "oicr/data/tenants/*" { capabilities = ["create","update","read"] }\npath "oicr/metadata/tenants/*" { capabilities = ["delete","list"] }',
     });
     await api("POST", "sys/auth/approle", { type: "approle" });
     await api("POST", "auth/approle/role/oicr-platform", { token_policies: ["oicr-platform"], token_ttl: "1h" });
@@ -223,6 +223,15 @@ describe.skipIf(!realAddr)("real Vault", () => {
     await store.delete(t1);
     expect(await store.get(t1)).toBeNull();
     expect((await api("GET", "oicr/metadata/tenants/tenant-a/connection/conn-1")).status).toBe(404);
+    expect(await store.get(t2)).toEqual({ apiKey: "b-1" });
+
+    // Offboarding removes everything under the tenant, and nothing else.
+    await store.put({ tenant: "tenant-c", kind: "connection", id: "c1" }, { k: 1 });
+    await store.put({ tenant: "tenant-c", kind: "channel", id: "h1" }, { k: 2 });
+    await store.put({ tenant: "tenant-c", kind: "connection", id: "c2" }, { k: 3 });
+    expect(await store.deleteTenant("tenant-c")).toBe(3);
+    expect(await store.get({ tenant: "tenant-c", kind: "channel", id: "h1" })).toBeNull();
+    expect(await store.deleteTenant("tenant-c")).toBe(0);
     expect(await store.get(t2)).toEqual({ apiKey: "b-1" });
 
     // A revoked token is replaced by a fresh login.

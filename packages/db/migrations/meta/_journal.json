@@ -43,6 +43,20 @@
       "when": 1792995178517,
       "tag": "0005_secret_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793082332491,
+      "tag": "0006_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793084530618,
+      "tag": "0007_plans_limits",
+      "breakpoints": true
     }
   ]
 }

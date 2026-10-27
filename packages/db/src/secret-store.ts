@@ -13,6 +13,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { devSecrets } from "./schema/secrets.js";
 import { decryptSecret, encryptSecret } from "./secrets.js";
+import { asTenant, rootDb } from "./tenancy.js";
 
 export type { SecretRef, SecretStore };
 
@@ -21,24 +22,29 @@ export class DatabaseSecretStore implements SecretStore {
   readonly backend = "database";
   constructor(private readonly db: Db) {}
 
+  private where(ref: SecretRef) {
+    return and(eq(devSecrets.tenant, ref.tenant), eq(devSecrets.kind, ref.kind), eq(devSecrets.id, ref.id));
+  }
+
   async put(ref: SecretRef, value: SecretValue): Promise<void> {
     assertRef(ref);
     const ciphertext = encryptSecret(value);
-    await this.db
-      .insert(devSecrets)
-      .values({ tenant: ref.tenant, kind: ref.kind, id: ref.id, ciphertext })
-      .onConflictDoUpdate({
-        target: [devSecrets.tenant, devSecrets.kind, devSecrets.id],
-        set: { ciphertext, updatedAt: new Date() },
-      });
+    await asTenant(this.db, ref.tenant, (db) =>
+      db
+        .insert(devSecrets)
+        .values({ tenant: ref.tenant, kind: ref.kind, id: ref.id, ciphertext })
+        .onConflictDoUpdate({
+          target: [devSecrets.tenant, devSecrets.kind, devSecrets.id],
+          set: { ciphertext, updatedAt: new Date() },
+        }),
+    );
   }
 
   async get<T extends SecretValue = SecretValue>(ref: SecretRef): Promise<T | null> {
     assertRef(ref);
-    const [row] = await this.db
-      .select({ ciphertext: devSecrets.ciphertext })
-      .from(devSecrets)
-      .where(and(eq(devSecrets.tenant, ref.tenant), eq(devSecrets.kind, ref.kind), eq(devSecrets.id, ref.id)));
+    const [row] = await asTenant(this.db, ref.tenant, (db) =>
+      db.select({ ciphertext: devSecrets.ciphertext }).from(devSecrets).where(this.where(ref)),
+    );
     if (!row) return null;
     try {
       return decryptSecret<T>(row.ciphertext);
@@ -52,9 +58,14 @@ export class DatabaseSecretStore implements SecretStore {
 
   async delete(ref: SecretRef): Promise<void> {
     assertRef(ref);
-    await this.db
-      .delete(devSecrets)
-      .where(and(eq(devSecrets.tenant, ref.tenant), eq(devSecrets.kind, ref.kind), eq(devSecrets.id, ref.id)));
+    await asTenant(this.db, ref.tenant, (db) => db.delete(devSecrets).where(this.where(ref)));
+  }
+
+  async deleteTenant(tenant: string): Promise<number> {
+    const rows = await asTenant(this.db, tenant, (db) =>
+      db.delete(devSecrets).where(eq(devSecrets.tenant, tenant)).returning({ id: devSecrets.id }),
+    );
+    return rows.length;
   }
 
   async check(): Promise<{ ok: boolean; message: string }> {
@@ -75,7 +86,9 @@ const stores = new WeakMap<object, SecretStore>();
  * - `database` otherwise, except in production, where it is refused.
  * Vault reads are cached for VAULT_CACHE_TTL_MS (default 60 s).
  */
-export function secretStore(db: Db, env: NodeJS.ProcessEnv = process.env): SecretStore {
+export function secretStore(scoped: Db, env: NodeJS.ProcessEnv = process.env): SecretStore {
+  // One store per pool, not per transaction: the Vault client and its cache are shared.
+  const db = rootDb(scoped);
   const key = db as unknown as object;
   const existing = stores.get(key);
   if (existing) return existing;
@@ -106,5 +119,5 @@ export function secretStore(db: Db, env: NodeJS.ProcessEnv = process.env): Secre
 
 /** Tests and tools: use a specific store for a database handle. */
 export function useSecretStore(db: Db, store: SecretStore): void {
-  stores.set(db as unknown as object, store);
+  stores.set(rootDb(db) as unknown as object, store);
 }

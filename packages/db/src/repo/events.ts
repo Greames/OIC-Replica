@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { Db } from "../client.js";
 import { deliveries, type EventType, events, notificationChannels, type Severity } from "../schema/events.js";
+import { asTenant } from "../tenancy.js";
 import { type Actor, assertCan } from "./access.js";
 
 export type Event = typeof events.$inferSelect;
@@ -31,39 +32,41 @@ export const EVENTS_CHANNEL = "oicr_events";
  * part of the change it describes.
  */
 export async function recordEvent(db: Db, e: NewEvent): Promise<Event> {
-  const [row] = await db
-    .insert(events)
-    .values({
-      orgId: e.orgId,
-      type: e.type,
-      severity: e.severity ?? "info",
-      subjectType: e.subjectType,
-      subjectId: e.subjectId,
-      summary: e.summary.slice(0, 500),
-      path: e.path ?? null,
-      data: e.data ?? {},
-    })
-    .returning();
-  const event = row!;
-  const channels = await db
-    .select({
-      id: notificationChannels.id,
-      eventTypes: notificationChannels.eventTypes,
-      minSeverity: notificationChannels.minSeverity,
-    })
-    .from(notificationChannels)
-    .where(and(eq(notificationChannels.orgId, e.orgId), eq(notificationChannels.enabled, true)));
-  const targets = channels.filter(
-    (c) => RANK[event.severity] >= RANK[c.minSeverity] && matchesPattern(event.type, c.eventTypes),
-  );
-  if (targets.length > 0) {
-    await db
-      .insert(deliveries)
-      .values(targets.map((c) => ({ eventId: event.id, channelId: c.id })))
-      .onConflictDoNothing();
-  }
-  await db.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${JSON.stringify({ orgId: event.orgId, id: event.id })})`);
-  return event;
+  return asTenant(db, e.orgId, async (db) => {
+    const [row] = await db
+      .insert(events)
+      .values({
+        orgId: e.orgId,
+        type: e.type,
+        severity: e.severity ?? "info",
+        subjectType: e.subjectType,
+        subjectId: e.subjectId,
+        summary: e.summary.slice(0, 500),
+        path: e.path ?? null,
+        data: e.data ?? {},
+      })
+      .returning();
+    const event = row!;
+    const channels = await db
+      .select({
+        id: notificationChannels.id,
+        eventTypes: notificationChannels.eventTypes,
+        minSeverity: notificationChannels.minSeverity,
+      })
+      .from(notificationChannels)
+      .where(and(eq(notificationChannels.orgId, e.orgId), eq(notificationChannels.enabled, true)));
+    const targets = channels.filter(
+      (c) => RANK[event.severity] >= RANK[c.minSeverity] && matchesPattern(event.type, c.eventTypes),
+    );
+    if (targets.length > 0) {
+      await db
+        .insert(deliveries)
+        .values(targets.map((c) => ({ orgId: event.orgId, eventId: event.id, channelId: c.id })))
+        .onConflictDoNothing();
+    }
+    await db.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${JSON.stringify({ orgId: event.orgId, id: event.id })})`);
+    return event;
+  });
 }
 
 /**
@@ -85,28 +88,32 @@ export async function listEvents(
   actor: Actor,
   opts: { sinceId?: number; types?: string[]; limit?: number; newestFirst?: boolean } = {},
 ): Promise<{ events: Event[]; nextSinceId: number }> {
-  assertCan(actor, "read");
-  const limit = Math.min(opts.limit ?? 50, 500);
-  const rows = await db
-    .select()
-    .from(events)
-    .where(
-      and(
-        eq(events.orgId, actor.orgId),
-        opts.sinceId !== undefined ? gt(events.id, opts.sinceId) : undefined,
-        opts.types?.length ? inArray(events.type, opts.types as EventType[]) : undefined,
-      ),
-    )
-    .orderBy(opts.newestFirst ? desc(events.id) : asc(events.id))
-    .limit(limit);
-  const maxId = rows.reduce((m, r) => Math.max(m, r.id), opts.sinceId ?? 0);
-  return { events: rows, nextSinceId: maxId };
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const limit = Math.min(opts.limit ?? 50, 500);
+    const rows = await db
+      .select()
+      .from(events)
+      .where(
+        and(
+          eq(events.orgId, actor.orgId),
+          opts.sinceId !== undefined ? gt(events.id, opts.sinceId) : undefined,
+          opts.types?.length ? inArray(events.type, opts.types as EventType[]) : undefined,
+        ),
+      )
+      .orderBy(opts.newestFirst ? desc(events.id) : asc(events.id))
+      .limit(limit);
+    const maxId = rows.reduce((m, r) => Math.max(m, r.id), opts.sinceId ?? 0);
+    return { events: rows, nextSinceId: maxId };
+  });
 }
 
 export async function getEventForOrg(db: Db, orgId: string, id: number): Promise<Event | null> {
-  const [row] = await db
-    .select()
-    .from(events)
-    .where(and(eq(events.orgId, orgId), eq(events.id, id)));
-  return row ?? null;
+  return asTenant(db, orgId, async (db) => {
+    const [row] = await db
+      .select()
+      .from(events)
+      .where(and(eq(events.orgId, orgId), eq(events.id, id)));
+    return row ?? null;
+  });
 }

@@ -39,7 +39,9 @@ services:
     build: .
     command: ["node", "packages/db/dist/migrate.js"]
     environment:
+      # Migrations run as the owner, and give the application role its login.
       DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-oicr_app}
       SECRETS_BACKEND: vault
       VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
       VAULT_TOKEN_FILE: /vault-token/token
@@ -54,7 +56,10 @@ services:
   web:
     build: .
     environment:
-      DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      # The application role: no superuser, no BYPASSRLS, so tenant isolation applies.
+      DATABASE_URL: postgres://oicr_app:${APP_DB_PASSWORD:-oicr_app}@postgres:5432/oicr
+      QUEUE_DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      STREAM_URL: http://stream:3001
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       SECRETS_BACKEND: vault
@@ -86,11 +91,38 @@ services:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
       interval: 10s
 
+  # The stream engine: runs HTTP-triggered integrations (/t/...), apart from the web app.
+  stream:
+    build: .
+    command: ["node", "apps/stream/dist/main.js"]
+    environment:
+      DATABASE_URL: postgres://oicr_app:${APP_DB_PASSWORD:-oicr_app}@postgres:5432/oicr
+      QUEUE_DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      SECRETS_BACKEND: vault
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN_FILE: /vault-token/token
+      VAULT_KV_MOUNT: oicr
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      APP_URL: ${APP_URL:-${BETTER_AUTH_URL:-http://localhost:3000}}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      STREAM_PORT: "3001"
+    volumes: ["vault-token:/vault-token:ro"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    ports: ["3001:3001"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/readyz"]
+      interval: 10s
+    restart: unless-stopped
+
   worker:
     build: .
     command: ["node", "apps/worker/dist/main.js"]
     environment:
-      DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      DATABASE_URL: postgres://oicr_app:${APP_DB_PASSWORD:-oicr_app}@postgres:5432/oicr
+      QUEUE_DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
       SECRETS_BACKEND: vault
       VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
       VAULT_TOKEN_FILE: /vault-token/token

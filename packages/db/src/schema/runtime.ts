@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   customType,
@@ -96,6 +97,8 @@ export const integrations = pgTable(
     triggerTokenCiphertext: bytea("trigger_token_ciphertext"),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     activatedBy: uuid("activated_by").references(() => users.id, { onDelete: "set null" }),
+    /** The immutable plan the data plane runs while the integration is active. */
+    activePlanId: uuid("active_plan_id").references((): AnyPgColumn => integrationPlans.id, { onDelete: "set null" }),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: created(),
     updatedAt: updated(),
@@ -152,6 +155,8 @@ export const instances = pgTable(
       .references(() => integrations.id, { onDelete: "cascade" }),
     integrationVersion: text("integration_version").notNull(),
     definitionHash: text("definition_hash").notNull(),
+    /** What runs: the plan that was active when the run was created. */
+    planId: uuid("plan_id").references(() => integrationPlans.id, { onDelete: "set null" }),
     status: text("status", { enum: INSTANCE_STATUSES }).notNull().default("queued"),
     triggerKind: text("trigger_kind", { enum: TRIGGER_KINDS }).notNull(),
     parentInstanceId: uuid("parent_instance_id"),
@@ -182,6 +187,10 @@ export const instanceSteps = pgTable(
   "instance_steps",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Copied from the parent row, so row-level security can check it directly. */
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
     instanceId: uuid("instance_id")
       .notNull()
       .references(() => instances.id, { onDelete: "cascade" }),
@@ -198,3 +207,44 @@ export const instanceSteps = pgTable(
   },
   (t) => [uniqueIndex().on(t.instanceId, t.seq)],
 );
+
+/**
+ * An execution plan: the definition as it was activated, immutable. Runs
+ * reference the plan they were created with, so editing or re-activating an
+ * integration never changes what an already-queued run executes, and the data
+ * plane needs nothing but plans.
+ */
+export const integrationPlans = pgTable(
+  "integration_plans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    integrationId: uuid("integration_id")
+      .notNull()
+      .references((): AnyPgColumn => integrations.id, { onDelete: "cascade" }),
+    version: text("version").notNull(),
+    definitionHash: text("definition_hash").notNull(),
+    definition: jsonb("definition").notNull(),
+    tracingLevel: text("tracing_level", { enum: TRACING_LEVELS }).notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: created(),
+  },
+  (t) => [uniqueIndex().on(t.integrationId, t.definitionHash, t.tracingLevel), index().on(t.orgId)],
+);
+
+export const TENANT_TIERS = ["standard", "business", "dedicated"] as const;
+
+/** Per-tenant execution limits. No row means the platform defaults for "standard". */
+export const tenantLimits = pgTable("tenant_limits", {
+  orgId: uuid("org_id")
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: "cascade" }),
+  tier: text("tier", { enum: TENANT_TIERS }).notNull().default("standard"),
+  /** Concurrent synchronous calls per stream engine instance. */
+  syncConcurrency: integer("sync_concurrency"),
+  /** Trigger requests per second per stream engine instance (bursts up to 2x). */
+  requestsPerSecond: integer("requests_per_second"),
+  updatedAt: updated(),
+});

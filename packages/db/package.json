@@ -11,6 +11,10 @@
     "./migrate": {
       "types": "./dist/migrate.d.ts",
       "default": "./dist/migrate.js"
+    },
+    "./offboard": {
+      "types": "./dist/offboard.d.ts",
+      "default": "./dist/offboard.js"
     }
   },
   "scripts": {

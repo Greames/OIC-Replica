@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Db } from "../client.js";
 import { connections } from "../schema/runtime.js";
 import { secretStore } from "../secret-store.js";
+import { asTenant } from "../tenancy.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { emitEvent } from "./events.js";
 
@@ -71,58 +72,64 @@ export async function listConnections(
   actor: Actor,
   opts: { projectId?: string } = {},
 ): Promise<ConnectionView[]> {
-  assertCan(actor, "read");
-  const rows = await db
-    .select()
-    .from(connections)
-    .where(
-      and(eq(connections.orgId, actor.orgId), opts.projectId ? eq(connections.projectId, opts.projectId) : undefined),
-    )
-    .orderBy(asc(connections.name));
-  return rows.map(view);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const rows = await db
+      .select()
+      .from(connections)
+      .where(
+        and(eq(connections.orgId, actor.orgId), opts.projectId ? eq(connections.projectId, opts.projectId) : undefined),
+      )
+      .orderBy(asc(connections.name));
+    return rows.map(view);
+  });
 }
 
 export async function getConnection(db: Db, actor: Actor, id: string): Promise<ConnectionView> {
-  assertCan(actor, "read");
-  const [row] = await db
-    .select()
-    .from(connections)
-    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
-  if (!row) throw new NotFoundError("Connection");
-  return view(row);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const [row] = await db
+      .select()
+      .from(connections)
+      .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+    if (!row) throw new NotFoundError("Connection");
+    return view(row);
+  });
 }
 
 export async function createConnection(db: Db, actor: Actor, input: ConnectionInput): Promise<ConnectionView> {
-  assertCan(actor, "build");
-  const data = ConnectionInput.parse(input);
-  const { properties } = checkAdapter(data);
-  const identifier = data.identifier ?? toConnectionIdentifier(data.name);
-  const [row] = await db
-    .insert(connections)
-    .values({
-      orgId: actor.orgId,
-      projectId: data.projectId ?? null,
-      name: data.name,
-      identifier,
-      adapter: data.adapter,
-      role: data.role,
-      properties,
-      authType: data.authType,
-      hasSecret: Boolean(data.secret),
-    })
-    .onConflictDoNothing({ target: [connections.orgId, connections.identifier] })
-    .returning();
-  if (!row) throw new ConflictError(`A connection with the identifier ${identifier} already exists.`);
-  if (data.secret) {
-    try {
-      await secretStore(db).put(secretRef(actor.orgId, row.id), data.secret);
-    } catch (e) {
-      // No connection without its credential: undo the row.
-      await db.delete(connections).where(eq(connections.id, row.id));
-      throw e;
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const data = ConnectionInput.parse(input);
+    const { properties } = checkAdapter(data);
+    const identifier = data.identifier ?? toConnectionIdentifier(data.name);
+    const [row] = await db
+      .insert(connections)
+      .values({
+        orgId: actor.orgId,
+        projectId: data.projectId ?? null,
+        name: data.name,
+        identifier,
+        adapter: data.adapter,
+        role: data.role,
+        properties,
+        authType: data.authType,
+        hasSecret: Boolean(data.secret),
+      })
+      .onConflictDoNothing({ target: [connections.orgId, connections.identifier] })
+      .returning();
+    if (!row) throw new ConflictError(`A connection with the identifier ${identifier} already exists.`);
+    if (data.secret) {
+      try {
+        await secretStore(db).put(secretRef(actor.orgId, row.id), data.secret);
+      } catch (e) {
+        // No connection without its credential: undo the row.
+        await db.delete(connections).where(eq(connections.id, row.id));
+        throw e;
+      }
     }
-  }
-  return view(row);
+    return view(row);
+  });
 }
 
 export async function updateConnection(
@@ -131,74 +138,86 @@ export async function updateConnection(
   id: string,
   input: ConnectionInput,
 ): Promise<ConnectionView> {
-  assertCan(actor, "build");
-  const data = ConnectionInput.parse(input);
-  const { properties } = checkAdapter(data);
-  const [current] = await db
-    .select({ id: connections.id })
-    .from(connections)
-    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
-  if (!current) throw new NotFoundError("Connection");
-  // Write the credential first: the row never claims a secret the store does not have.
-  if (data.secret) await secretStore(db).put(secretRef(actor.orgId, id), data.secret);
-  if (data.secret === null) await secretStore(db).delete(secretRef(actor.orgId, id));
-  const [row] = await db
-    .update(connections)
-    .set({
-      name: data.name,
-      projectId: data.projectId ?? null,
-      role: data.role,
-      properties,
-      authType: data.authType,
-      ...(data.secret !== undefined ? { hasSecret: Boolean(data.secret), secretCiphertext: null } : {}),
-      status: "draft",
-      lastTestError: null,
-    })
-    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)))
-    .returning();
-  if (!row) throw new NotFoundError("Connection");
-  return view(row);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const data = ConnectionInput.parse(input);
+    const { properties } = checkAdapter(data);
+    const [current] = await db
+      .select({ id: connections.id })
+      .from(connections)
+      .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+    if (!current) throw new NotFoundError("Connection");
+    // Write the credential first: the row never claims a secret the store does not have.
+    if (data.secret) await secretStore(db).put(secretRef(actor.orgId, id), data.secret);
+    if (data.secret === null) await secretStore(db).delete(secretRef(actor.orgId, id));
+    const [row] = await db
+      .update(connections)
+      .set({
+        name: data.name,
+        projectId: data.projectId ?? null,
+        role: data.role,
+        properties,
+        authType: data.authType,
+        ...(data.secret !== undefined ? { hasSecret: Boolean(data.secret), secretCiphertext: null } : {}),
+        status: "draft",
+        lastTestError: null,
+      })
+      .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)))
+      .returning();
+    if (!row) throw new NotFoundError("Connection");
+    return view(row);
+  });
 }
 
 export async function deleteConnection(db: Db, actor: Actor, id: string): Promise<void> {
-  assertCan(actor, "build");
-  const [row] = await db
-    .select({ id: connections.id })
-    .from(connections)
-    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
-  if (!row) return;
-  // Credential first: a failure leaves the connection in place to retry, never an orphaned secret.
-  await secretStore(db).delete(secretRef(actor.orgId, id));
-  await db.delete(connections).where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "build");
+    const [row] = await db
+      .select({ id: connections.id })
+      .from(connections)
+      .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+    if (!row) return;
+    // Credential first: a failure leaves the connection in place to retry, never an orphaned secret.
+    await secretStore(db).delete(secretRef(actor.orgId, id));
+    await db.delete(connections).where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+  });
 }
 
-/** Runs the adapter's test and stores the outcome (S16 "Test"). */
+/**
+ * Runs the adapter's test and stores the outcome (S16 "Test"). The network
+ * call happens outside any database transaction.
+ */
 export async function testConnection(db: Db, actor: Actor, id: string): Promise<TestResult> {
   assertCan(actor, "build");
-  const [row] = await db
-    .select()
-    .from(connections)
-    .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+  const row = await asTenant(db, actor.orgId, async (db) => {
+    const [r] = await db
+      .select()
+      .from(connections)
+      .where(and(eq(connections.orgId, actor.orgId), eq(connections.id, id)));
+    return r;
+  });
   if (!row) throw new NotFoundError("Connection");
   const result = await getAdapter(row.adapter).test(await toConfig(db, row));
-  await db
-    .update(connections)
-    .set({
-      status: result.ok ? "configured" : "failed",
-      lastTestedAt: new Date(),
-      lastTestError: result.ok ? null : result.message,
-    })
-    .where(eq(connections.id, id));
-  await emitEvent(db, {
-    orgId: actor.orgId,
-    type: result.ok ? "connection.test_passed" : "connection.test_failed",
-    severity: result.ok ? "info" : "warning",
-    subjectType: "connection",
-    subjectId: id,
-    summary: result.ok
-      ? `Connection "${row.name}" passed its test.`
-      : `Connection "${row.name}" failed its test: ${result.message}`,
-    path: `/connections/${id}`,
+  await asTenant(db, actor.orgId, async (db) => {
+    await db
+      .update(connections)
+      .set({
+        status: result.ok ? "configured" : "failed",
+        lastTestedAt: new Date(),
+        lastTestError: result.ok ? null : result.message,
+      })
+      .where(eq(connections.id, id));
+    await emitEvent(db, {
+      orgId: actor.orgId,
+      type: result.ok ? "connection.test_passed" : "connection.test_failed",
+      severity: result.ok ? "info" : "warning",
+      subjectType: "connection",
+      subjectId: id,
+      summary: result.ok
+        ? `Connection "${row.name}" passed its test.`
+        : `Connection "${row.name}" failed its test: ${result.message}`,
+      path: `/connections/${id}`,
+    });
   });
   return result;
 }
@@ -216,19 +235,23 @@ async function toConfig(db: Db, row: Row): Promise<ConnectionConfig> {
  * Never pass the result to the browser or the AI builder.
  */
 export async function loadConnectionForRun(db: Db, orgId: string, identifier: string) {
-  const [row] = await db
-    .select()
-    .from(connections)
-    .where(and(eq(connections.orgId, orgId), eq(connections.identifier, identifier)));
-  if (!row) return null;
-  return { adapter: row.adapter, role: row.role, config: await toConfig(db, row) };
+  return asTenant(db, orgId, async (db) => {
+    const [row] = await db
+      .select()
+      .from(connections)
+      .where(and(eq(connections.orgId, orgId), eq(connections.identifier, identifier)));
+    if (!row) return null;
+    return { adapter: row.adapter, role: row.role, config: await toConfig(db, row) };
+  });
 }
 
 /** Identifier → role/adapter, for validating FlowDocs against what exists. */
 export async function connectionIndex(db: Db, orgId: string) {
-  const rows = await db
-    .select({ identifier: connections.identifier, role: connections.role, adapter: connections.adapter })
-    .from(connections)
-    .where(eq(connections.orgId, orgId));
-  return Object.fromEntries(rows.map((r) => [r.identifier, { role: r.role, adapter: r.adapter }]));
+  return asTenant(db, orgId, async (db) => {
+    const rows = await db
+      .select({ identifier: connections.identifier, role: connections.role, adapter: connections.adapter })
+      .from(connections)
+      .where(eq(connections.orgId, orgId));
+    return Object.fromEntries(rows.map((r) => [r.identifier, { role: r.role, adapter: r.adapter }]));
+  });
 }
