@@ -10,7 +10,15 @@ import {
 import { deliverDue } from "@oicr/notify";
 import { ATTR, currentTraceId, extractContext, SpanKind, withSpan } from "@oicr/platform";
 import { startTelemetry } from "@oicr/platform/otel";
-import { executeInstance, getQueue, RUN_QUEUE, type RunJob, startRun, stopQueue } from "@oicr/runtime";
+import {
+  executeInstance,
+  getQueue,
+  RUN_QUEUE,
+  type RunJob,
+  runGroupConcurrency,
+  startRun,
+  stopQueue,
+} from "@oicr/runtime";
 
 // The worker: runs queued instances, fires schedules, and reaps runs whose
 // worker died. Several workers can run side by side; Postgres locks keep each
@@ -111,14 +119,19 @@ async function reap(): Promise<void> {
 async function main(): Promise<void> {
   await assertTenantIsolation(db, (msg) => log(msg));
   const boss = await getQueue({ worker: true });
-  await boss.work<RunJob>(RUN_QUEUE, { localConcurrency: concurrency, batchSize: 1 }, async ([job]) => {
-    if (!job) return;
-    const { instance } = await executeInstance(db, job.data.instanceId, {
-      signal: controller.signal,
-      parent: extractContext(job.data.trace),
-    });
-    log("run finished", { instance: instance.id, status: instance.status, ms: instance.durationMs });
-  });
+  // Each tenant's runs are capped by its tier across all workers, so one busy tenant cannot starve others.
+  await boss.work<RunJob>(
+    RUN_QUEUE,
+    { localConcurrency: concurrency, batchSize: 1, groupConcurrency: runGroupConcurrency() },
+    async ([job]) => {
+      if (!job) return;
+      const { instance } = await executeInstance(db, job.data.instanceId, {
+        signal: controller.signal,
+        parent: extractContext(job.data.trace),
+      });
+      log("run finished", { instance: instance.id, status: instance.status, ms: instance.durationMs });
+    },
+  );
 
   await db.$client.listen(EVENTS_CHANNEL, () => void deliver());
   const timers = [setInterval(schedulerTick, tickMs), setInterval(reap, 60_000), setInterval(deliver, 2_000)];

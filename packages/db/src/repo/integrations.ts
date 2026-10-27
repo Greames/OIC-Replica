@@ -1,13 +1,13 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "../client.js";
 import { nextRunAfter, ScheduleInput } from "../schedule.js";
 import { orgs } from "../schema/auth.js";
 import { projects } from "../schema/core.js";
 import { lookups } from "../schema/lookups.js";
-import { instanceSteps, instances, integrations, schedules } from "../schema/runtime.js";
+import { instanceSteps, instances, integrationPlans, integrations, schedules } from "../schema/runtime.js";
 import { asSystem, asTenant, refuse } from "../tenancy.js";
 import { type Actor, assertCan, ConflictError, NotFoundError } from "./access.js";
 import { connectionIndex } from "./connections.js";
@@ -15,6 +15,7 @@ import { emitEvent } from "./events.js";
 import { toIdentifier } from "./projects.js";
 
 export type Integration = typeof integrations.$inferSelect;
+export type IntegrationPlan = typeof integrationPlans.$inferSelect;
 export type Schedule = typeof schedules.$inferSelect;
 
 export const NewIntegration = z.object({
@@ -242,9 +243,11 @@ export async function activateIntegration(
         activatedAt: new Date(),
         activatedBy: actor.userId,
         tracingLevel: opts.tracingLevel ?? current.tracingLevel,
+        activePlanId: await planFor(db, actor, current, opts.tracingLevel ?? current.tracingLevel),
       })
       .where(eq(integrations.id, id))
       .returning();
+    await announceRoute(db, row!);
     if (current.schedule) {
       await db
         .update(schedules)
@@ -270,12 +273,64 @@ export async function deactivateIntegration(db: Db, actor: Actor, id: string): P
     const current = await getIntegration(db, actor, id);
     const [row] = await db
       .update(integrations)
-      .set({ status: current.validationErrors.length === 0 ? "configured" : "draft" })
+      .set({ status: current.validationErrors.length === 0 ? "configured" : "draft", activePlanId: null })
       .where(eq(integrations.id, id))
       .returning();
     if (current.schedule)
       await db.update(schedules).set({ nextRunAt: null }).where(eq(schedules.id, current.schedule.id));
+    await announceRoute(db, row!);
     return row!;
+  });
+}
+
+/**
+ * The immutable plan for what is being activated: an existing one when the
+ * same definition and tracing level ran before, otherwise a new snapshot.
+ */
+async function planFor(
+  db: Db,
+  actor: Actor,
+  current: Integration,
+  tracingLevel: Integration["tracingLevel"],
+): Promise<string> {
+  const [existing] = await db
+    .select({ id: integrationPlans.id })
+    .from(integrationPlans)
+    .where(
+      and(
+        eq(integrationPlans.integrationId, current.id),
+        eq(integrationPlans.definitionHash, current.definitionHash),
+        eq(integrationPlans.tracingLevel, tracingLevel),
+      ),
+    );
+  if (existing) return existing.id;
+  const [plan] = await db
+    .insert(integrationPlans)
+    .values({
+      orgId: current.orgId,
+      integrationId: current.id,
+      version: current.version,
+      definitionHash: current.definitionHash,
+      definition: current.definition,
+      tracingLevel,
+      createdBy: actor.userId,
+    })
+    .returning({ id: integrationPlans.id });
+  return plan!.id;
+}
+
+/** Stream engines cache trigger routes; this tells them one changed (delivered on commit). */
+export const ROUTES_CHANNEL = "oicr_routes";
+async function announceRoute(db: Db, i: { id: string; orgId: string; identifier: string }): Promise<void> {
+  const payload = JSON.stringify({ integrationId: i.id, orgId: i.orgId, identifier: i.identifier });
+  await db.execute(sql`select pg_notify(${ROUTES_CHANNEL}, ${payload})`);
+}
+
+/** For the data plane: a plan by id, within its tenant. */
+export async function loadPlan(db: Db, orgId: string, planId: string): Promise<IntegrationPlan | null> {
+  return asTenant(db, orgId, async (db) => {
+    const [plan] = await db.select().from(integrationPlans).where(eq(integrationPlans.id, planId));
+    return plan ?? null;
   });
 }
 
@@ -307,20 +362,27 @@ export async function createTriggerToken(db: Db, actor: Actor, id: string): Prom
         triggerTokenCiphertext: null,
       })
       .where(and(eq(integrations.orgId, actor.orgId), eq(integrations.id, id)));
+    await announceRoute(db, await getIntegration(db, actor, id));
     return token;
   });
 }
 
 /** For the trigger endpoint: the active integration behind /t/{org}/{identifier}. */
+/**
+ * For the trigger endpoint: the active integration behind /t/{org}/{identifier},
+ * with the plan it runs and its token hash. Cross-tenant by design (routing a
+ * URL); everything after runs in the integration's tenant.
+ */
 export async function findActiveTrigger(db: Db, orgSlug: string, identifier: string) {
   return asSystem(db, "findActiveTrigger", async (db) => {
     const [row] = await db
-      .select({ integration: integrations })
+      .select({ integration: integrations, plan: integrationPlans })
       .from(integrations)
       .innerJoin(orgs, eq(orgs.id, integrations.orgId))
+      .leftJoin(integrationPlans, eq(integrationPlans.id, integrations.activePlanId))
       .where(and(eq(orgs.slug, orgSlug), eq(integrations.identifier, identifier), eq(integrations.status, "active")));
     if (!row) return null;
-    return { integration: row.integration, tokenHash: row.integration.triggerTokenHash };
+    return { integration: row.integration, plan: row.plan, tokenHash: row.integration.triggerTokenHash };
   });
 }
 

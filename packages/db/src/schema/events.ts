@@ -31,6 +31,7 @@ export const EVENT_TYPES = [
   "ai.change.proposed",
   "ai.change.accepted",
   "ai.change.rejected",
+  "connection.circuit_open",
   "channel.test",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];

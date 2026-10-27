@@ -1,122 +1,45 @@
-import { findActiveTrigger, verifyTriggerToken } from "@oicr/db";
-import { FlowDoc } from "@oicr/flow-schema";
-import { ATTR, currentTraceId, extractContext, SpanKind, withSpan } from "@oicr/platform";
-import { startRun } from "@oicr/runtime";
-import { db } from "@/lib/db";
-
-// Trigger endpoint for active application integrations:
-//   {METHOD} /t/{org slug}/{integration identifier}{trigger path}
-//   Authorization: Bearer <trigger token>     (created on the integration page, stored as a hash)
-//   Idempotency-Key: <optional, dedupes repeats>
-// The request body (or the query, for GET) becomes $trigger.
-// Sync integrations answer with their `return` step; others get 202 + run id.
+// /t/... belongs to the stream engine (apps/stream), which runs integrations
+// apart from the web app. This route only forwards to it, so trigger URLs on
+// the app's own address keep working; production ingress can route /t/ to the
+// stream engine directly.
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const HOP_BY_HOP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "host", "content-length"]);
 
-type Params = { params: Promise<{ org: string; identifier: string; path?: string[] }> };
-
-function json(status: number, body: unknown, headers: Record<string, string> = {}) {
-  return Response.json(body, { status, headers });
-}
-
-/** Each call is a server span, continuing the caller's trace when it sends traceparent. */
-function handle(req: Request, ctx: Params): Promise<Response> {
-  return withSpan(
-    "http trigger",
-    { "http.request.method": req.method, "url.path": new URL(req.url).pathname },
-    async (span) => {
-      const res = await handleInner(req, ctx, (k, v) => span.setAttribute(k, v));
-      span.setAttribute("http.response.status_code", res.status);
-      const trace = currentTraceId();
-      if (trace) res.headers.set("x-trace-id", trace);
-      return res;
-    },
-    { kind: SpanKind.SERVER, parent: extractContext(req.headers) },
-  );
-}
-
-async function handleInner(
-  req: Request,
-  { params }: Params,
-  tag: (key: string, value: string) => void,
-): Promise<Response> {
-  const { org, identifier, path = [] } = await params;
-  const found = await findActiveTrigger(db, org, identifier);
-  if (!found) return json(404, { error: "not_found", message: "No active integration at this address." });
-  tag(ATTR.tenant, found.integration.orgId);
-  tag(ATTR.integration, found.integration.id);
-  tag(ATTR.integrationVersion, found.integration.version);
-
-  const doc = FlowDoc.safeParse(found.integration.definition);
-  if (!doc.success || doc.data.trigger.type !== "http") {
-    return json(404, { error: "not_found", message: "This integration is not started by HTTP calls." });
-  }
-  const trigger = doc.data.trigger;
-
-  const given = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-  if (!verifyTriggerToken(given, found.tokenHash)) {
-    return json(
-      401,
-      { error: "unauthorized", message: "Send the integration's token as Authorization: Bearer <token>." },
-      { "www-authenticate": "Bearer" },
-    );
-  }
-
-  const wantPath = trigger.path.replace(/\/+$/, "") || "/";
-  const gotPath = `/${path.join("/")}`.replace(/\/+$/, "") || "/";
-  if (wantPath !== gotPath)
-    return json(404, { error: "not_found", message: `This integration listens on ${wantPath}.` });
-  if (req.method !== trigger.method) {
-    return json(405, { error: "method_not_allowed", message: `Use ${trigger.method}.` }, { allow: trigger.method });
-  }
-
-  let input: unknown;
-  if (req.method === "GET" || req.method === "DELETE") {
-    input = Object.fromEntries(new URL(req.url).searchParams);
-  } else {
-    if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
-      return json(413, { error: "too_large", message: "The body is over 10 MB." });
-    }
-    const text = await req.text();
-    if (Buffer.byteLength(text) > MAX_BODY_BYTES)
-      return json(413, { error: "too_large", message: "The body is over 10 MB." });
-    if (/json/i.test(req.headers.get("content-type") ?? "") || /^\s*[[{]/.test(text)) {
-      try {
-        input = text ? JSON.parse(text) : {};
-      } catch {
-        return json(400, { error: "invalid_json", message: "The body is not valid JSON." });
-      }
-    } else {
-      input = text;
-    }
-  }
-
-  const run = await startRun(db, found.integration, {
-    input,
-    kind: "request",
-    sync: trigger.sync,
-    idempotencyKey: req.headers.get("idempotency-key"),
+async function forward(req: Request): Promise<Response> {
+  const target = (process.env.STREAM_URL || "http://localhost:3001").replace(/\/$/, "");
+  const url = new URL(req.url);
+  const headers = new Headers();
+  req.headers.forEach((v, k) => {
+    if (!HOP_BY_HOP.has(k)) headers.set(k, v);
   });
-  const headers = { "x-run-id": run.instanceId };
-
-  if (run.duplicate) return json(200, { duplicate: true, runId: run.instanceId, status: run.status }, headers);
-  if (!trigger.sync) return json(202, { runId: run.instanceId, status: "queued" }, headers);
-  if (run.status !== "succeeded") {
-    return json(
-      run.error?.code === "aborted" ? 504 : 500,
-      { error: run.error?.code ?? "failed", message: run.error?.message, runId: run.instanceId },
+  headers.set("x-forwarded-host", url.host);
+  headers.set("x-forwarded-proto", url.protocol.replace(":", ""));
+  let res: Response;
+  try {
+    res = await fetch(`${target}${url.pathname}${url.search}`, {
+      method: req.method,
       headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer(),
+      redirect: "manual",
+    });
+  } catch {
+    return Response.json(
+      { error: "unavailable", message: "The integration runtime is not reachable. Retry shortly." },
+      { status: 503, headers: { "retry-after": "2" } },
     );
   }
-  if (run.response) return json(run.response.status, run.response.body ?? null, headers);
-  return json(200, { runId: run.instanceId, status: run.status }, headers);
+  const out = new Headers();
+  res.headers.forEach((v, k) => {
+    if (!HOP_BY_HOP.has(k)) out.set(k, v);
+  });
+  return new Response(res.body, { status: res.status, headers: out });
 }
 
-export const GET = handle;
-export const POST = handle;
-export const PUT = handle;
-export const PATCH = handle;
-export const DELETE = handle;
+export const GET = forward;
+export const POST = forward;
+export const PUT = forward;
+export const PATCH = forward;
+export const DELETE = forward;

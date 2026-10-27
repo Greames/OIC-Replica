@@ -14,7 +14,7 @@ export async function createInstance(
   db: Db,
   args: {
     orgId: string;
-    integration: { id: string; version: string; definitionHash: string };
+    integration: { id: string; version: string; definitionHash: string; activePlanId?: string | null };
     triggerKind: Instance["triggerKind"];
     input: unknown;
     idempotencyKey?: string | null;
@@ -29,6 +29,7 @@ export async function createInstance(
         integrationId: args.integration.id,
         integrationVersion: args.integration.version,
         definitionHash: args.integration.definitionHash,
+        planId: args.integration.activePlanId ?? null,
         triggerKind: args.triggerKind,
         input: args.input ?? null,
         idempotencyKey: args.idempotencyKey ?? null,

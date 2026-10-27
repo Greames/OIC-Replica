@@ -50,7 +50,7 @@ docker compose up --build
 ```
 
 This starts Postgres, a local Vault (initialised and unsealed automatically; credentials are
-stored there), the web app and the worker. Open http://localhost:3000, create an account and a
+stored there), the web app, the stream engine (trigger URLs) and the worker. Open http://localhost:3000, create an account and a
 workspace. Then:
 
 1. **Connections → New connection**: a REST API with its base URL and credentials. Press **Test**.
@@ -120,7 +120,7 @@ docker compose up -d postgres              # or any Postgres 16
 cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY (dev credential store)
 set -a; . ./.env; set +a
 pnpm db:migrate
-pnpm dev                                   # web on :3000 + worker
+pnpm dev                                   # web on :3000, stream engine on :3001, worker
 ```
 
 ### Checks
@@ -129,7 +129,7 @@ pnpm dev                                   # web on :3000 + worker
 pnpm lint          # Biome
 pnpm typecheck
 pnpm test          # unit tests; DB tests need TEST_DATABASE_URL, real-Vault tests VAULT_TEST_ADDR
-pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app and the worker;
+pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app, the stream engine and the worker;
                                # the AI builder runs on recorded turns (no API key needed)
 pnpm --filter @oicr/ai eval    # AI builder quality against the configured provider (needs its key;
                                # uses real tokens)
@@ -138,7 +138,8 @@ pnpm --filter @oicr/ai eval    # AI builder quality against the configured provi
 ## Layout
 
 ```
-apps/web               Next.js 16 app: UI, auth, AI chat, trigger endpoint (/t/...), API (/api/v1), MCP (/mcp)
+apps/web               Next.js 16 app: UI, auth, AI chat, API (/api/v1), MCP (/mcp); forwards /t/... to the stream engine
+apps/stream            stream engine: serves trigger URLs (/t/...), runs sync flows inline, queues async ones
 apps/worker            runs queued integrations, fires schedules, delivers notifications, reaps crashed runs
 packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema for the AI
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)

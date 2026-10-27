@@ -42,6 +42,13 @@ export default defineConfig({
           }),
         },
         {
+          // The stream engine owns /t/...; the web app forwards to it.
+          command: "pnpm --filter @oicr/stream start",
+          url: "http://127.0.0.1:3001/healthz",
+          reuseExistingServer: true,
+          env: env({ STREAM_PORT: "3001" }),
+        },
+        {
           command: "pnpm --filter @oicr/worker start",
           // No port: wait for its start-up log line.
           wait: { stdout: /worker started/ },

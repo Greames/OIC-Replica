@@ -1,5 +1,6 @@
 import { createInstance, type Db, type Integration } from "@oicr/db";
 import { executeInstance } from "./execute.js";
+import { tenantLimits } from "./limits.js";
 import { enqueueRun } from "./queue.js";
 
 export interface TriggerResult {
@@ -40,6 +41,7 @@ export async function startRun(
       error: done.errorCode ? { code: done.errorCode, message: done.errorMessage ?? "" } : undefined,
     };
   }
-  await enqueueRun(instance.id);
+  const limits = await tenantLimits(db, integration.orgId);
+  await enqueueRun(instance.id, { tenant: integration.orgId, tier: limits.tier });
   return { instanceId: instance.id, duplicate, status: "queued" };
 }

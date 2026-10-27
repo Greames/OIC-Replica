@@ -169,12 +169,40 @@ document records the decisions, the target topology, and the order in which it i
 - Kept for one more release: the emptied legacy ciphertext columns, so installs upgrading from
   before P1 still have their credentials moved by `migrate` before the columns go.
 
+## P2b notes (done): stream engine, plans, per-tenant limits
+
+- `apps/stream`: a plain `node:http` service that owns `/t/{org}/{identifier}/…`. It keeps no
+  state between requests: routes come from a cache (single-flight loads, short TTLs, a shorter
+  one for misses) that every instance drops on `NOTIFY oicr_routes`, sent when an integration is
+  activated or deactivated or its token is replaced. Sync triggers run inline and answer with
+  the flow's response; async triggers queue the run and answer 202. Bodies are capped (413), each
+  tenant has a request rate and a concurrent-request cap from its tier (429 with `Retry-After`),
+  and there is a process-wide in-flight cap. Every request is a server span; the trace id is
+  returned in `x-trace-id` when tracing is on. `/healthz` and `/readyz` (database reachable) for
+  orchestrators; SIGTERM stops accepting and drains in-flight requests.
+- The web app's `/t/…` route only forwards to `STREAM_URL`, so existing trigger URLs keep
+  working; production ingress can send `/t/` to the stream engine directly.
+- Execution plans (migration 0007, `integration_plans`): activation stores an immutable copy of
+  the validated definition and tracing level; the integration points at it (`active_plan_id`)
+  and each run records the plan it was created with, so editing or re-activating never changes
+  a run in flight. Runs from before plans existed fall back to the definition.
+- Per-tenant limits (`tenant_limits`: tier, sync concurrency, requests per second; defaults per
+  tier from `TIER_*`). Async runs are queued with the tenant as the pg-boss group, and workers cap
+  each group's concurrent runs by tier, so one busy tenant cannot starve the others.
+- Circuit breakers in the runtime, per tenant and connection: after `BREAKER_FAILURES`
+  consecutive retryable failures calls are refused for `BREAKER_OPEN_SECONDS`, then one probe
+  is let through. Refusals are retryable step faults with a retry delay; an opening raises a
+  `connection.circuit_open` event.
+- Verified: unit tests for the route cache, limits, drain and breaker; the e2e suite runs
+  through the stream engine; in docker compose a trigger on the web address is proxied to the
+  stream service, queued, run by the worker on its plan, and a bad token gets 401.
+
 ## Build order
 
 | step | delivers |
 | --- | --- |
 | **P1 Trust foundations** ✅ | `packages/platform` (retry policy, tracing helpers, OTel bootstrap); tracing on every execution block; `packages/vault` (Vault KV v2 + dev backend); connection credentials and channel configs moved to the store; trigger tokens hashed; Vault in docker compose; migration of existing secrets |
-| P2 Stream engine + tenant isolation (P2a ✅ isolation) | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
+| **P2 Stream engine + tenant isolation** ✅ | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
 | P3 Semantic catalog | catalog and bindings model, seed bindings for Fusion, EBS, NetSuite, SAP; AI binding proposals with review; `$sem` in the mapper; compile at activation |
 | P4 Batch engine | pipeline runtime, worker-thread transforms, checkpoints, reject stream; database adapter (Postgres, Oracle, MySQL) |
 | P5 ERP connectors | Oracle Fusion REST + FBDI, NetSuite REST/SuiteTalk, SAP OData; their bulk paths for the batch engine |

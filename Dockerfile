@@ -19,6 +19,7 @@ COPY packages/runtime/package.json packages/runtime/
 COPY packages/ai/package.json packages/ai/
 COPY packages/notify/package.json packages/notify/
 COPY apps/worker/package.json apps/worker/
+COPY apps/stream/package.json apps/stream/
 
 FROM manifests AS build
 RUN pnpm install --frozen-lockfile
@@ -40,6 +41,7 @@ COPY --from=build /app/packages/runtime/dist packages/runtime/dist
 COPY --from=build /app/packages/ai/dist packages/ai/dist
 COPY --from=build /app/packages/notify/dist packages/notify/dist
 COPY --from=build /app/apps/worker/dist apps/worker/dist
+COPY --from=build /app/apps/stream/dist apps/stream/dist
 COPY --from=build /app/apps/web/.next apps/web/.next
 COPY --from=build /app/apps/web/next.config.ts apps/web/
 USER node

@@ -5,6 +5,7 @@ export const RUN_QUEUE = "run-instance";
 
 export interface RunJob {
   instanceId: string;
+  tenant?: string;
   /** W3C trace context of whoever queued it, so the worker continues the same trace. */
   trace?: Record<string, string>;
 }
@@ -36,11 +37,16 @@ export function getQueue(opts: { url?: string; worker?: boolean } = {}): Promise
   return shared;
 }
 
-export async function enqueueRun(instanceId: string): Promise<void> {
+/**
+ * Queues a run. The tenant is the job's group, so workers cap each tenant's
+ * concurrent runs (by tier) and one busy tenant cannot starve the others.
+ */
+export async function enqueueRun(instanceId: string, group?: { tenant: string; tier: string }): Promise<void> {
   const boss = await getQueue();
-  await boss.send(RUN_QUEUE, { instanceId, trace: injectContext() } satisfies RunJob, {
+  await boss.send(RUN_QUEUE, { instanceId, tenant: group?.tenant, trace: injectContext() } satisfies RunJob, {
     retryLimit: 0,
     singletonKey: instanceId,
+    ...(group ? { group: { id: group.tenant, tier: group.tier } } : {}),
   });
 }
 

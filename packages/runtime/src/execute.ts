@@ -5,21 +5,55 @@ import {
   asTenant,
   capPayload,
   type Db,
+  emitEvent,
   finishInstance,
   type Instance,
   instances,
   integrations,
   loadConnectionForRun,
   loadLookup,
+  loadPlan,
   PAYLOAD_LIMITS,
   startInstance,
 } from "@oicr/db";
 import { type EngineDeps, type RunResult, runFlow } from "@oicr/engine";
 import { FlowDoc } from "@oicr/flow-schema";
-import { ATTR, activeContext, type Context, recordError, SpanKind, tracer } from "@oicr/platform";
+import {
+  ATTR,
+  activeContext,
+  BreakerRegistry,
+  CircuitOpenError,
+  type Context,
+  recordError,
+  SpanKind,
+  tracer,
+} from "@oicr/platform";
 import { SecretStoreError } from "@oicr/vault";
 import { eq } from "drizzle-orm";
 import { emailNotifier } from "./email.js";
+
+/** Breakers for this process, by "tenant:connection". Openings are announced as events. */
+export const breakers = new BreakerRegistry(
+  {
+    failureThreshold: Number(process.env.BREAKER_FAILURES ?? 5),
+    openMs: Number(process.env.BREAKER_OPEN_SECONDS ?? 30) * 1000,
+  },
+  (state, key) => {
+    if (state !== "open" || !breakerEvents.db) return;
+    const [orgId, connection] = key.split(":") as [string, string];
+    void emitEvent(breakerEvents.db, {
+      orgId,
+      type: "connection.circuit_open",
+      severity: "warning",
+      subjectType: "connection",
+      subjectId: orgId,
+      summary: `Calls to connection ${connection} are paused after repeated failures; they resume automatically.`,
+      path: "/connections",
+      data: { connection },
+    });
+  },
+);
+const breakerEvents: { db?: Db } = {};
 
 export interface ExecuteOptions {
   signal?: AbortSignal;
@@ -68,6 +102,7 @@ export function executeInstance(db: Db, instanceId: string, opts: ExecuteOptions
 }
 
 async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): Promise<ExecuteResult> {
+  breakerEvents.db ??= db;
   const instance = await startInstance(db, instanceId);
   if (!instance) {
     // Another worker claimed it: report its current state.
@@ -77,10 +112,17 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
     return { instance: current!, result: null };
   }
 
-  // From here on, everything runs as the run's own tenant.
-  const [integration] = await asTenant(db, instance.orgId, (db) =>
-    db.select().from(integrations).where(eq(integrations.id, instance.integrationId)),
-  );
+  // From here on, everything runs as the run's own tenant. A run executes the
+  // plan it was created with; runs from before plans existed use the definition.
+  const plan = instance.planId ? await loadPlan(db, instance.orgId, instance.planId) : null;
+  const [integration] = plan
+    ? [{ definition: plan.definition, tracingLevel: plan.tracingLevel }]
+    : await asTenant(db, instance.orgId, (db) =>
+        db
+          .select({ definition: integrations.definition, tracingLevel: integrations.tracingLevel })
+          .from(integrations)
+          .where(eq(integrations.id, instance.integrationId)),
+      );
   if (!integration) {
     return {
       instance: await finishInstance(db, instance, {
@@ -135,12 +177,31 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
       if (conn.role === "trigger") {
         throw new AdapterError("connection_role", `Connection "${call.connection}" can only be used as a trigger.`);
       }
-      return getAdapter(conn.adapter).invoke(conn.config, {
-        operation: call.operation,
-        config: call.config,
-        request: call.request,
-        signal: call.signal,
-      });
+      const resolved = conn;
+      // One breaker per tenant and connection: a failing system is paused, not hammered.
+      const breaker = breakers.get(`${instance.orgId}:${call.connection}`);
+      try {
+        return await breaker.run(
+          () =>
+            getAdapter(resolved.adapter).invoke(resolved.config, {
+              operation: call.operation,
+              config: call.config,
+              request: call.request,
+              signal: call.signal,
+            }),
+          (e) => e instanceof AdapterError && e.retryable && e.code !== "aborted",
+        );
+      } catch (e) {
+        if (e instanceof CircuitOpenError)
+          throw new AdapterError(
+            "circuit_open",
+            `${e.message} (connection "${call.connection}")`,
+            { connection: call.connection },
+            true,
+            e.retryAfterMs,
+          );
+        throw e;
+      }
     },
     async record(rec) {
       const failed = rec.status === "failed";
