@@ -92,6 +92,11 @@ Expressions are JSONata. Bindings:
 - $<as>: the current forEach item
 - $fault: inside onFault, {code, message, stepId, details}
 - $lookupValue("lookup", "from domain", value, "to domain", default?): translates a value with a lookup (e.g. country codes between systems). Check list_lookups for names and domains; use only lookups that exist. A list of values gives a list.
+- Semantic Catalog functions, for ERP data (Oracle Fusion and EBS, NetSuite, SAP and the workspace's own systems). Call semantic_catalog to see entities and which objects are bound; use only bound objects, with the system and object written as literal strings:
+  - $toSemantic(records, "system", "object"): technical records → catalog entities (e.g. HZ_CUST_ACCOUNTS rows → Customer {number, name, active...}), values normalised (numbers, booleans, ISO dates)
+  - $fromSemantic(entities, "system", "object"): catalog entities → the system's fields and formats
+  - $translate(records, "from system", "from object", "to system", "to object"): system to system through the catalog, for objects of the same entity
+  Prefer them over hand-written field-by-field maps between ERP objects: they use the workspace's reviewed bindings and are compiled into the integration at activation. Add a map step after them for fields the catalog does not cover.
 Text fields marked "template" (log.message, notify.to/subject/body, throw.message) are literal text with {{ JSONata }} parts.
 Step ids: letters, digits and _, start with a letter, unique in the document. Use short meaningful ids (fetch, each, send), and labels for people.
 Business identifiers (businessIds, up to 3, exactly one primary) let people find runs, e.g. by order id.

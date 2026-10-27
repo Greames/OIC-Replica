@@ -52,6 +52,11 @@ export interface EngineDeps {
   maxSteps?: number;
   /** Finds a lookup by name for $lookupValue (null: no such lookup). */
   lookup?(name: string): Promise<LookupTable | null>;
+  /**
+   * Extra JSONata functions, by name without the $ (the semantic functions
+   * of the run's plan). A step id of the same name shadows a function.
+   */
+  functions?: Record<string, (...args: never[]) => unknown>;
   /** Jitter source for retry waits (tests pass a fixed one). */
   random?(): number;
 }
@@ -169,6 +174,7 @@ async function runFlowInner(doc: FlowDoc, trigger: unknown, deps: EngineDeps): P
     return deps.lookup(name);
   });
   const bindings = (scope: Scope): Record<string, unknown> => ({
+    ...deps.functions,
     [LOOKUP_FUNCTION]: lookupValue,
     ...outputs,
     ...scope.loop,

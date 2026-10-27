@@ -11,6 +11,7 @@ COPY apps/web/package.json apps/web/
 COPY packages/flow-schema/package.json packages/flow-schema/
 COPY packages/platform/package.json packages/platform/
 COPY packages/vault/package.json packages/vault/
+COPY packages/semantic/package.json packages/semantic/
 COPY packages/db/package.json packages/db/
 COPY packages/auth/package.json packages/auth/
 COPY packages/adapters/package.json packages/adapters/
@@ -32,6 +33,7 @@ RUN CI=true pnpm install --frozen-lockfile --prod --ignore-scripts
 COPY --from=build /app/packages/flow-schema/dist packages/flow-schema/dist
 COPY --from=build /app/packages/platform/dist packages/platform/dist
 COPY --from=build /app/packages/vault/dist packages/vault/dist
+COPY --from=build /app/packages/semantic/dist packages/semantic/dist
 COPY --from=build /app/packages/db/dist packages/db/dist
 COPY --from=build /app/packages/db/migrations packages/db/migrations
 COPY --from=build /app/packages/auth/dist packages/auth/dist

@@ -317,6 +317,17 @@ describe("runFlow", () => {
     expect(r.fault?.message).toContain('Lookup "missing" does not exist.');
   });
 
+  it("calls injected functions, such as the plan's semantic functions", async () => {
+    const doc = flow({
+      steps: [{ id: "m", type: "map", expression: '$toSemantic($trigger, "netsuite", "customer").number' }],
+    });
+    const h = harness();
+    const toSemantic = vi.fn(async (v: { entityId: string }) => ({ number: v.entityId }));
+    await runFlow(doc, { entityId: "C-1" }, { ...h.deps, functions: { toSemantic } });
+    expect(h.records[0]?.output).toBe("C-1");
+    expect(toSemantic).toHaveBeenCalledWith({ entityId: "C-1" }, "netsuite", "customer");
+  });
+
   it("turns expression errors into faults on the step", async () => {
     const doc = flow({ steps: [{ id: "m", type: "map", expression: "$number('abc')" }] });
     const h = harness();

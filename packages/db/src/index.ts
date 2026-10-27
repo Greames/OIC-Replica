@@ -12,6 +12,7 @@ export * from "./repo/instances.js";
 export * from "./repo/integrations.js";
 export * from "./repo/lookups.js";
 export * from "./repo/projects.js";
+export * from "./repo/semantic.js";
 export * from "./repo/tenants.js";
 export * from "./schedule.js";
 export * as schema from "./schema/index.js";

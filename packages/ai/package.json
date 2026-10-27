@@ -22,11 +22,12 @@
     "@oicr/adapters": "workspace:*",
     "@oicr/db": "workspace:*",
     "@oicr/flow-schema": "workspace:*",
+    "@oicr/platform": "workspace:*",
+    "@oicr/semantic": "workspace:*",
     "drizzle-orm": "^0.45.4",
     "jsonata": "^2.2.2",
     "openai": "^7.43.0",
-    "zod": "^4.6.7",
-    "@oicr/platform": "workspace:*"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22",

@@ -9,6 +9,7 @@ import {
   listLookups,
   NotFoundError,
   orgs,
+  semanticDrift,
 } from "@oicr/db";
 import { FlowDoc, type Issue } from "@oicr/flow-schema";
 import { eq } from "drizzle-orm";
@@ -45,13 +46,14 @@ export default async function IntegrationPage({
     if (e instanceof NotFoundError) notFound();
     throw e;
   });
-  const [runs, conns, connRows, [org], samples, lookupRows] = await Promise.all([
+  const [runs, conns, connRows, [org], samples, lookupRows, drift] = await Promise.all([
     listInstances(db, viewer, { integrationId: id, limit: 10 }),
     connectionIndex(db, viewer.orgId),
     listConnections(db, viewer),
     db.select({ slug: orgs.slug }).from(orgs).where(eq(orgs.id, viewer.orgId)),
     getSamples(db, viewer, id),
     listLookups(db, viewer),
+    semanticDrift(db, viewer, integration.status === "active" ? integration.activePlanId : null),
   ]);
 
   const def = integration.definition as { trigger?: { type?: string; method?: string; path?: string; sync?: boolean } };
@@ -98,6 +100,13 @@ export default async function IntegrationPage({
           canOperate={can(viewer.role, "operate")}
           needsPayload={isHttp && def.trigger?.sync === true}
         />
+        {active && drift.length > 0 && (
+          <p role="status" className="mt-3 rounded-lg bg-muted p-3 text-sm">
+            The semantic bindings of {drift.map((k) => k.replace("/", " / ")).join(", ")} changed since this integration
+            was activated. Runs keep using the bindings it was activated with; deactivate and activate it to use the new
+            ones.
+          </p>
+        )}
         {!active && integration.status !== "configured" && (
           <p className="mt-3 text-sm text-fg-muted">
             {(integration.validationErrors as Issue[]).length > 0

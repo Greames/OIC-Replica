@@ -90,9 +90,10 @@ document records the decisions, the target topology, and the order in which it i
 - **AI reasoning**: given a schema sample (columns, types, sample values, descriptions), the
   model proposes bindings with evidence and a confidence; low-confidence or conflicting bindings
   wait for a person. Accepted bindings become part of the tenant's graph.
-- **Use**: maps written against the catalog (`$sem.Customer.accountNumber`) or system-to-system
-  maps derived through the catalog (source binding ∘ inverse target binding). Compiled to JSONata
-  at activation.
+- **Use**: `$toSemantic(records, system, object)` reads technical records as catalog entities,
+  `$fromSemantic` writes them back in a system's fields and formats, and `$translate` derives
+  system-to-system maps through the catalog (source binding ∘ inverse target binding). Compiled
+  into the execution plan at activation (see P3 notes).
 
 ## Reliability and observability
 
@@ -197,13 +198,56 @@ document records the decisions, the target topology, and the order in which it i
   through the stream engine; in docker compose a trigger on the web address is proxied to the
   stream service, queued, run by the worker on its plan, and a bad token gets 401.
 
+## P3 notes (done): semantic catalog
+
+- `packages/semantic`: the platform catalog (`CATALOG_VERSION` 2026.10, nine entities with typed
+  attributes, identifiers, references and synonyms) and platform bindings for Oracle Fusion REST
+  resources, Oracle EBS tables, NetSuite REST records and SAP S/4HANA OData V2 entities. Each
+  system has a dialect (EBS: Y/N flags; SAP: `/Date(ms)/` dates). `SemanticGraph` applies a
+  workspace's layer on top: added attributes and entities, objects of any system, rebound or
+  switched-off fields; one field per attribute per object, the workspace's winning.
+- Workspace layer (migration 0008, all under RLS): `semantic_entities`, `semantic_objects`,
+  `semantic_bindings` (one row per field; `attribute` null switches a platform binding off) and
+  `semantic_proposals` (AI proposals with per-item decisions; field names and types only, never
+  sample values). A test fails if any table with `org_id` lacks forced RLS.
+- Use: `$toSemantic`, `$fromSemantic`, `$translate` with literal system and object names. The
+  validator checks them against bound objects on save; activation compiles the objects a flow
+  uses into a `SemanticPlan` (fields, transforms, attribute types, dialect, per-object hashes)
+  stored on the execution plan, and plan reuse includes its hash. The runtime builds the JSONata
+  functions from the plan (cached per plan id): no catalog lookup or model call on the hot path.
+  Reading normalises values to the catalog's form; writing renders the target dialect; read-only
+  fields are never written. `semanticDrift` compares a plan's object hashes with the current
+  graph so the integration page can say when bindings changed; running plans are untouched.
+- AI discovery (`packages/ai/src/semantic.ts`): a pasted sample (JSON, API envelopes such as
+  OData `d.results`, CSV, or column lists) is reduced to fields with types and up to three
+  shortened example values (optional). The model answers through one `submit_bindings` tool;
+  `checkProposal` refuses unknown entities, attributes and fields, invalid transforms and
+  duplicate attributes, and the model gets one correction round with the reasons. Items at or
+  above 0.9 confidence (with entity confidence ≥ 0.9) that do not conflict with current bindings
+  apply automatically (recorded with no approver); the rest wait for review, where people
+  approve, correct the attribute or reject. Approval replaces a conflicting binding. Traced as
+  `ai propose_bindings`; transient provider errors are retried with backoff.
+- The AI builder has a `semantic_catalog` tool and its prompt prefers the functions for
+  ERP-to-ERP flows; `test_expression` and the mapper's test pane compile semantic calls from the
+  current graph so they can be tried before activation. Read access: `GET /api/v1/catalog`, MCP
+  `semantic_catalog`.
+- Verified: unit tests for platform bindings, graph overrides, compile, drift, runtime read and
+  write per dialect, sample parsing and proposal checks; database tests for isolation, binding
+  checks, auto-approval and conflicts, plan compilation, drift and plan reuse; a runtime test
+  translating EBS to NetSuite on a pinned plan; AI tests with a scripted model; an e2e test
+  that binds a system with AI, reviews it, translates in a sync integration and sees drift; in
+  docker compose an SAP sales order posted to the trigger URL comes back as EBS columns.
+- Not yet: line-level objects (order and invoice lines), relationships resolved across objects
+  (a reference holds the other entity's number, which the flow must supply), and a catalog
+  version upgrade path for workspace layers.
+
 ## Build order
 
 | step | delivers |
 | --- | --- |
 | **P1 Trust foundations** ✅ | `packages/platform` (retry policy, tracing helpers, OTel bootstrap); tracing on every execution block; `packages/vault` (Vault KV v2 + dev backend); connection credentials and channel configs moved to the store; trigger tokens hashed; Vault in docker compose; migration of existing secrets |
 | **P2 Stream engine + tenant isolation** ✅ | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
-| P3 Semantic catalog | catalog and bindings model, seed bindings for Fusion, EBS, NetSuite, SAP; AI binding proposals with review; `$sem` in the mapper; compile at activation |
+| **P3 Semantic catalog** ✅ | catalog and bindings model, seed bindings for Fusion, EBS, NetSuite, SAP; AI binding proposals with review; `$toSemantic` / `$fromSemantic` / `$translate`; compile at activation |
 | P4 Batch engine | pipeline runtime, worker-thread transforms, checkpoints, reject stream; database adapter (Postgres, Oracle, MySQL) |
 | P5 ERP connectors | Oracle Fusion REST + FBDI, NetSuite REST/SuiteTalk, SAP OData; their bulk paths for the batch engine |
 | P6 Operations | errors list with resubmit, dashboards on the traces and run data, AI failure explanations |

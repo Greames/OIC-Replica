@@ -7,6 +7,7 @@ export * from "./json-schema.js";
 export * from "./lookup.js";
 export * from "./mapping.js";
 export * from "./schema.js";
+export * from "./semantic.js";
 export * from "./shape.js";
 export * from "./sources.js";
 export * from "./validate.js";

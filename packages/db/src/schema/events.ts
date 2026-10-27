@@ -32,6 +32,8 @@ export const EVENT_TYPES = [
   "ai.change.accepted",
   "ai.change.rejected",
   "connection.circuit_open",
+  "semantic.proposal_ready",
+  "semantic.bindings_changed",
   "channel.test",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];

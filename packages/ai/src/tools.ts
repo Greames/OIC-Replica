@@ -9,9 +9,11 @@ import {
   createConnection,
   type Db,
   getIntegration,
+  getSemanticGraph,
   listConnections,
   listLookups,
   loadLookup,
+  loadSemanticGraph,
   lookupNames,
   ScheduleInput,
   toConnectionIdentifier,
@@ -23,8 +25,11 @@ import {
   isEmptyDiff,
   LOOKUP_FUNCTION,
   lookupFunction,
+  parseExpression,
+  semanticKey,
   validateFlow,
 } from "@oicr/flow-schema";
+import { compileObjects, semanticFunctions } from "@oicr/semantic";
 import { and, desc, eq } from "drizzle-orm";
 import jsonata from "jsonata";
 import { z } from "zod";
@@ -88,6 +93,16 @@ export const TOOLS: Tool[] = [
       'List the workspace\'s lookups (value maps between systems, e.g. country codes): name, domains (columns) and a few example rows. Use them in expressions as $lookupValue("name", "from domain", value, "to domain", default?).',
     strict: true,
     input_schema: strictObject({}),
+  },
+  {
+    name: "semantic_catalog",
+    description:
+      'Read the workspace\'s Semantic Catalog: business entities (Customer, Invoice...) with their attributes, and which system objects (EBS tables, Fusion/NetSuite/SAP resources...) are bound to them, field by field. Leave both inputs "" for an overview; give an entity or a system for details. Use bound objects in expressions with $toSemantic, $fromSemantic and $translate.',
+    strict: true,
+    input_schema: strictObject({
+      entity: { type: "string", description: 'An entity name, e.g. "Customer", or "".' },
+      system: { type: "string", description: 'A system id, e.g. "oracle-ebs", or "".' },
+    }),
   },
   {
     name: "get_flow",
@@ -174,6 +189,7 @@ export const TOOLS: Tool[] = [
 ];
 
 const Inputs = {
+  semantic_catalog: z.object({ entity: z.string(), system: z.string() }),
   infer_schema: z.object({ sample: z.string() }),
   test_expression: z.object({ expression: z.string(), bindings_json: z.string() }),
   ask_user: z.object({ question: z.string().min(1), choices: z.array(z.string()).max(6) }),
@@ -193,6 +209,17 @@ const Inputs = {
     flow: z.record(z.string(), z.unknown()),
   }),
 };
+
+/**
+ * Semantic functions for trying an expression before activation: the objects
+ * it names, compiled from the workspace's current bindings.
+ */
+export async function trialSemanticFunctions(db: Db, actor: Actor, expression: string) {
+  const parsed = parseExpression(expression);
+  const keys = parsed.semantics.flatMap((c) => c.objects.map(semanticKey));
+  if (keys.length === 0) return {};
+  return semanticFunctions(compileObjects(await loadSemanticGraph(db, actor.orgId), keys));
+}
 
 export const ASK_USER = "ask_user";
 
@@ -273,6 +300,67 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
       return { content: json(withExamples) };
     }
 
+    case "semantic_catalog": {
+      const { entity, system } = Inputs.semantic_catalog.parse(input);
+      const graph = await getSemanticGraph(db, actor);
+      const objectsOf = (filter: { entity?: string; system?: string }) =>
+        graph
+          .objects(filter)
+          .filter((o) => o.fields.length > 0)
+          .map((o) => ({
+            system: o.system,
+            object: o.object,
+            entity: o.entity,
+            label: o.label,
+            fields: Object.fromEntries(
+              o.fields.map((f) => [f.field, f.attribute + (f.readOnly ? " (read only)" : "")]),
+            ),
+          }));
+      if (entity) {
+        const e = graph.entity(entity);
+        if (!e)
+          return {
+            content: `No entity "${entity}". Entities: ${graph
+              .entities()
+              .map((x) => x.name)
+              .join(", ")}.`,
+            isError: true,
+          };
+        return {
+          content: json({
+            entity: {
+              name: e.name,
+              description: e.description,
+              attributes: e.attributes.map((a) => ({
+                name: a.name,
+                type: a.type,
+                description: a.description,
+                ...(a.identifier ? { identifier: true } : {}),
+                ...(a.references ? { references: a.references } : {}),
+              })),
+            },
+            boundObjects: objectsOf({ entity, system: system || undefined }),
+          }),
+        };
+      }
+      if (system) return { content: json({ system: graph.system(system) ?? null, objects: objectsOf({ system }) }) };
+      return {
+        content: json({
+          entities: graph
+            .entities()
+            .map((e) => ({ name: e.name, description: e.description, attributes: e.attributes.map((a) => a.name) })),
+          systems: graph.systems().map((s) => ({
+            id: s.id,
+            label: s.label,
+            objects: graph
+              .objects({ system: s.id })
+              .filter((o) => o.fields.length > 0)
+              .map((o) => `${o.object} → ${o.entity}`),
+          })),
+        }),
+      };
+    }
+
     case "get_flow": {
       const integration = session.integrationId ? await getIntegration(db, actor, session.integrationId) : null;
       const [latest] = await asTenant(db, actor.orgId, (db) =>
@@ -322,6 +410,7 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
       try {
         const lookupValue = lookupFunction((name) => loadLookup(db, actor.orgId, name));
         const result = await jsonata(expression).evaluate(bindings.trigger ?? {}, {
+          ...(await trialSemanticFunctions(db, actor, expression)),
           [LOOKUP_FUNCTION]: lookupValue,
           ...bindings,
         });
@@ -391,6 +480,7 @@ async function proposeFlow(input: unknown, ctx: ToolContext): Promise<ToolOutcom
   const result = validateFlow(flow, {
     connections: await connectionIndex(db, actor.orgId),
     lookups: await lookupNames(db, actor.orgId),
+    semanticObjects: (await loadSemanticGraph(db, actor.orgId)).objectIndex(),
   });
   const errors: Issue[] = [...result.errors];
   if (integration && (flow as { style?: string }).style !== integration.style) {

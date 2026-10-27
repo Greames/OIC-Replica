@@ -1,12 +1,16 @@
 "use server";
 
+import { trialSemanticFunctions } from "@oicr/ai";
 import { getIntegration, loadLookup, setSample } from "@oicr/db";
 import { evaluateExpression, LOOKUP_FUNCTION, lookupFunction } from "@oicr/flow-schema";
 import { db } from "@/lib/db";
 import { toActionError } from "@/lib/errors";
 import { requireViewer } from "@/lib/session";
 
-/** The mapper's test pane: evaluates an expression against sample bindings, with the org's lookups. */
+/**
+ * The mapper's test pane: evaluates an expression against sample bindings,
+ * with the org's lookups and its current semantic bindings.
+ */
 export async function testExpressionAction(
   integrationId: string,
   expression: string,
@@ -29,7 +33,11 @@ export async function testExpressionAction(
       setTimeout(() => reject(new Error("The expression took longer than 5 seconds.")), 5000),
     );
     const result = await Promise.race([
-      evaluateExpression(expression, bindings.trigger ?? {}, { ...bindings, [LOOKUP_FUNCTION]: lookupValue }),
+      evaluateExpression(expression, bindings.trigger ?? {}, {
+        ...(await trialSemanticFunctions(db, viewer, expression)),
+        ...bindings,
+        [LOOKUP_FUNCTION]: lookupValue,
+      }),
       timeout,
     ]);
     return { ok: true, result: result ?? null };

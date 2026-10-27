@@ -1,6 +1,7 @@
 import { parseExpression, templateExpressions } from "./expressions.js";
 import { mappedKeys, parseMapping } from "./mapping.js";
 import { FlowDoc, type Step } from "./schema.js";
+import { SEMANTIC_FUNCTIONS, semanticKey } from "./semantic.js";
 import { type StepContext, walkSteps } from "./walk.js";
 
 export type IssueCode =
@@ -18,6 +19,9 @@ export type IssueCode =
   | "unknown_library"
   | "business_id_primary"
   | "unknown_lookup"
+  | "semantic_call"
+  | "unknown_semantic_object"
+  | "semantic_mismatch"
   | "required_unmapped";
 
 export interface Issue {
@@ -35,6 +39,11 @@ export interface ValidationContext {
   libraries?: string[];
   /** Lookup names that exist. When given, $lookupValue("name", ...) is checked. */
   lookups?: string[];
+  /**
+   * System objects with semantic bindings, as "system/object" → entity. When
+   * given, $toSemantic/$fromSemantic/$translate are checked against them.
+   */
+  semanticObjects?: Record<string, string>;
 }
 
 export type ValidationResult =
@@ -242,6 +251,30 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
           }
         }
       }
+      for (const call of r.semantics) {
+        const issue = (code: IssueCode, message: string) => errors.push({ code, message, path, stepId: c?.step.id });
+        if (call.arity || call.dynamic) {
+          issue(
+            "semantic_call",
+            `Use ${SEMANTIC_FUNCTIONS[call.fn].usage}${call.dynamic ? " with the system and object written as literal text" : ""}.`,
+          );
+          continue;
+        }
+        if (!ctx.semanticObjects) continue;
+        const entities = call.objects.map((o) => ctx.semanticObjects?.[semanticKey(o)]);
+        call.objects.forEach((o, i) => {
+          if (!entities[i])
+            issue(
+              "unknown_semantic_object",
+              `"${o.object}" of system "${o.system}" has no semantic bindings. Bind it under Semantic catalog, or pick a bound object.`,
+            );
+        });
+        if (call.fn === "translate" && entities[0] && entities[1] && entities[0] !== entities[1])
+          issue(
+            "semantic_mismatch",
+            `$translate needs two objects of the same entity: "${call.objects[0]!.object}" is a ${entities[0]}, "${call.objects[1]!.object}" is a ${entities[1]}.`,
+          );
+      }
       // Business ids are read after the trigger and may use any step's output.
       const known = new Set(
         c
@@ -260,6 +293,25 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
       }
     }
   }
+}
+
+/**
+ * Every JSONata expression in a document (template parts split out), with its
+ * path and step. For tools that analyse or compile expressions.
+ */
+export function flowExpressions(doc: FlowDoc): { source: string; path: (string | number)[]; stepId?: string }[] {
+  const out: { source: string; path: (string | number)[]; stepId?: string }[] = [];
+  const add = (source: string, path: (string | number)[], template: boolean, stepId?: string) => {
+    const parts = template ? templateExpressions(source).map((p) => p.source) : [source];
+    for (const p of parts) if (p !== "") out.push({ source: p, path, stepId });
+  };
+  walkSteps(doc, (c) => {
+    for (const e of expressionsOf(c.step)) add(e.source, [...c.path, ...e.key], e.template, c.step.id);
+  });
+  doc.businessIds.forEach((b, i) => {
+    add(b.expr, ["businessIds", i, "expr"], false);
+  });
+  return out;
 }
 
 /** Every expression and template a step carries, with its key path. */

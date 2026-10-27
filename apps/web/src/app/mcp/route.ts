@@ -15,6 +15,7 @@ import {
   opListProjects,
   opListRuns,
   opRun,
+  opSemanticCatalog,
   opStartBuild,
   toOpError,
   uuidParam,
@@ -99,6 +100,17 @@ function build(actor: KeyActor): McpServer {
       annotations: read,
     },
     () => call(() => opListLookups(actor, { rows: true })),
+  );
+  server.registerTool(
+    "semantic_catalog",
+    {
+      title: "Semantic catalog",
+      description:
+        'Business entities (Customer, Invoice...) and how system objects (Oracle EBS tables, Fusion/NetSuite/SAP resources...) map to them field by field. Integrations use them as $toSemantic, $fromSemantic and $translate(value, "from system", "from object", "to system", "to object").',
+      inputSchema: { system: z.string().optional(), entity: z.string().optional() },
+      annotations: read,
+    },
+    (a) => call(() => opSemanticCatalog(actor, a)),
   );
   server.registerTool(
     "get_run",
