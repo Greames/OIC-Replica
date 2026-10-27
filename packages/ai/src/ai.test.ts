@@ -4,6 +4,7 @@ import {
   acceptAiChange,
   activateIntegration,
   aiMessages,
+  asTenant,
   claimAiSession,
   createAiSession,
   createConnection,
@@ -173,11 +174,9 @@ describe.skipIf(!url)("AI builder loop (Postgres + scripted model)", () => {
     expect(toolErrors).toHaveLength(1);
 
     // The answer went back together with the other tool result of that turn.
-    const rows = await db!
-      .select()
-      .from(aiMessages)
-      .where(eq(aiMessages.sessionId, session.id))
-      .orderBy(asc(aiMessages.seq));
+    const rows = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(aiMessages).where(eq(aiMessages.sessionId, session.id)).orderBy(asc(aiMessages.seq)),
+    );
     const answer = rows[2]!.content as { type: string; tool_use_id: string; content: string }[];
     expect(answer.map((b) => b.tool_use_id).sort()).toEqual(["t1", "t2"]);
     expect(answer.find((b) => b.tool_use_id === "t2")?.content).toBe("Every 15 minutes");

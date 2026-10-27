@@ -1,5 +1,6 @@
 export * from "./client.js";
 export * from "./legacy-secrets.js";
+export * from "./offboard.js";
 export * from "./payload.js";
 export * from "./repo/access.js";
 export * from "./repo/ai.js";
@@ -16,3 +17,4 @@ export * as schema from "./schema/index.js";
 export * from "./schema/index.js";
 export * from "./secret-store.js";
 export * from "./secrets.js";
+export * from "./tenancy.js";

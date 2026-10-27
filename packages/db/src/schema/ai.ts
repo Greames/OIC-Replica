@@ -57,6 +57,10 @@ export const aiMessages = pgTable(
   "ai_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Copied from the parent row, so row-level security can check it directly. */
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
     sessionId: uuid("session_id")
       .notNull()
       .references(() => aiSessions.id, { onDelete: "cascade" }),

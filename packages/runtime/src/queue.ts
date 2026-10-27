@@ -13,11 +13,13 @@ let shared: Promise<PgBoss> | undefined;
 
 /**
  * The job queue (pg-boss, in the same Postgres). The web app only sends;
- * the worker also supervises and consumes.
+ * the worker also supervises and consumes. pg-boss manages its own schema, so
+ * it connects with QUEUE_DATABASE_URL (a role allowed to create it) when the
+ * application role is restricted; its jobs carry run ids only, no tenant data.
  */
 export function getQueue(opts: { url?: string; worker?: boolean } = {}): Promise<PgBoss> {
   shared ??= (async () => {
-    const url = opts.url ?? process.env.DATABASE_URL;
+    const url = opts.url ?? process.env.QUEUE_DATABASE_URL ?? process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL is not set");
     const boss = new PgBoss({
       connectionString: url,

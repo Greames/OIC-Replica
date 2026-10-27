@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Db } from "../client.js";
 import { deliveries, events, notificationChannels, SEVERITIES } from "../schema/events.js";
 import { secretStore } from "../secret-store.js";
+import { asSystem, asTenant } from "../tenancy.js";
 import { type Actor, assertCan, NotFoundError } from "./access.js";
 
 // Notification channels. Config (webhook URLs, bot tokens, signing secrets)
@@ -77,89 +78,99 @@ function view(row: Row): ChannelView {
 export const maskChannelTarget = mask;
 
 export async function listChannels(db: Db, actor: Actor): Promise<ChannelView[]> {
-  assertCan(actor, "read");
-  const rows = await db
-    .select()
-    .from(notificationChannels)
-    .where(eq(notificationChannels.orgId, actor.orgId))
-    .orderBy(asc(notificationChannels.createdAt));
-  return rows.map(view);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    const rows = await db
+      .select()
+      .from(notificationChannels)
+      .where(eq(notificationChannels.orgId, actor.orgId))
+      .orderBy(asc(notificationChannels.createdAt));
+    return rows.map(view);
+  });
 }
 
 export async function createChannel(db: Db, actor: Actor, input: ChannelInput): Promise<ChannelView> {
-  assertCan(actor, "admin");
-  const data = ChannelInput.parse(input);
-  const config = ChannelConfig[data.kind].parse(data.config);
-  const [row] = await db
-    .insert(notificationChannels)
-    .values({
-      orgId: actor.orgId,
-      kind: data.kind,
-      name: data.name,
-      target: mask(data.kind, config),
-      eventTypes: data.eventTypes,
-      minSeverity: data.minSeverity,
-      // Paused until its settings are stored, so no delivery can see it half-made.
-      enabled: false,
-      createdBy: actor.userId,
-    })
-    .returning();
-  try {
-    await secretStore(db).put(configRef(actor.orgId, row!.id), config);
-  } catch (e) {
-    await db.delete(notificationChannels).where(eq(notificationChannels.id, row!.id));
-    throw e;
-  }
-  const [ready] = await db
-    .update(notificationChannels)
-    .set({ enabled: true })
-    .where(eq(notificationChannels.id, row!.id))
-    .returning();
-  return view(ready!);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "admin");
+    const data = ChannelInput.parse(input);
+    const config = ChannelConfig[data.kind].parse(data.config);
+    const [row] = await db
+      .insert(notificationChannels)
+      .values({
+        orgId: actor.orgId,
+        kind: data.kind,
+        name: data.name,
+        target: mask(data.kind, config),
+        eventTypes: data.eventTypes,
+        minSeverity: data.minSeverity,
+        // Paused until its settings are stored, so no delivery can see it half-made.
+        enabled: false,
+        createdBy: actor.userId,
+      })
+      .returning();
+    try {
+      await secretStore(db).put(configRef(actor.orgId, row!.id), config);
+    } catch (e) {
+      await db.delete(notificationChannels).where(eq(notificationChannels.id, row!.id));
+      throw e;
+    }
+    const [ready] = await db
+      .update(notificationChannels)
+      .set({ enabled: true })
+      .where(eq(notificationChannels.id, row!.id))
+      .returning();
+    return view(ready!);
+  });
 }
 
 export async function setChannelEnabled(db: Db, actor: Actor, id: string, enabled: boolean): Promise<void> {
-  assertCan(actor, "admin");
-  const r = await db
-    .update(notificationChannels)
-    .set({ enabled })
-    .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)))
-    .returning({ id: notificationChannels.id });
-  if (r.length === 0) throw new NotFoundError("Channel");
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "admin");
+    const r = await db
+      .update(notificationChannels)
+      .set({ enabled })
+      .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)))
+      .returning({ id: notificationChannels.id });
+    if (r.length === 0) throw new NotFoundError("Channel");
+  });
 }
 
 export async function deleteChannel(db: Db, actor: Actor, id: string): Promise<void> {
-  assertCan(actor, "admin");
-  const [row] = await db
-    .select({ id: notificationChannels.id })
-    .from(notificationChannels)
-    .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
-  if (!row) return;
-  await secretStore(db).delete(configRef(actor.orgId, id));
-  await db
-    .delete(notificationChannels)
-    .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "admin");
+    const [row] = await db
+      .select({ id: notificationChannels.id })
+      .from(notificationChannels)
+      .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
+    if (!row) return;
+    await secretStore(db).delete(configRef(actor.orgId, id));
+    await db
+      .delete(notificationChannels)
+      .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
+  });
 }
 
 export async function recentDeliveries(db: Db, actor: Actor, channelId: string, limit = 10) {
-  assertCan(actor, "read");
-  return db
-    .select({
-      id: deliveries.id,
-      status: deliveries.status,
-      attempts: deliveries.attempts,
-      lastError: deliveries.lastError,
-      sentAt: deliveries.sentAt,
-      createdAt: deliveries.createdAt,
-      summary: events.summary,
-      type: events.type,
-    })
-    .from(deliveries)
-    .innerJoin(events, eq(events.id, deliveries.eventId))
-    .innerJoin(notificationChannels, eq(notificationChannels.id, deliveries.channelId))
-    .where(and(eq(deliveries.channelId, channelId), eq(notificationChannels.orgId, actor.orgId)))
-    .orderBy(desc(deliveries.createdAt))
-    .limit(limit);
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "read");
+    return db
+      .select({
+        id: deliveries.id,
+        status: deliveries.status,
+        attempts: deliveries.attempts,
+        lastError: deliveries.lastError,
+        sentAt: deliveries.sentAt,
+        createdAt: deliveries.createdAt,
+        summary: events.summary,
+        type: events.type,
+      })
+      .from(deliveries)
+      .innerJoin(events, eq(events.id, deliveries.eventId))
+      .innerJoin(notificationChannels, eq(notificationChannels.id, deliveries.channelId))
+      .where(and(eq(deliveries.channelId, channelId), eq(notificationChannels.orgId, actor.orgId)))
+      .orderBy(desc(deliveries.createdAt))
+      .limit(limit);
+  });
 }
 
 // ── delivery worker side (no actor: runs as the system) ─────────────────────
@@ -182,24 +193,27 @@ export interface DueDelivery {
  * failed (settings missing); it never blocks the others.
  */
 export async function claimDueDeliveries(db: Db, limit = 20, now = new Date()): Promise<DueDelivery[]> {
-  const claimed = await db.transaction(async (tx) => {
-    const rows = await tx
-      .select({ delivery: deliveries, channel: notificationChannels, event: events })
-      .from(deliveries)
-      .innerJoin(notificationChannels, eq(notificationChannels.id, deliveries.channelId))
-      .innerJoin(events, eq(events.id, deliveries.eventId))
-      .where(and(eq(deliveries.status, "pending"), lte(deliveries.nextAttemptAt, now)))
-      .orderBy(asc(deliveries.nextAttemptAt))
-      .limit(limit)
-      .for("update", { of: deliveries, skipLocked: true });
-    for (const r of rows) {
-      await tx
-        .update(deliveries)
-        .set({ attempts: sql`${deliveries.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 60_000) })
-        .where(eq(deliveries.id, r.delivery.id));
-    }
-    return rows;
-  });
+  // Cross-tenant by design: one worker serves every tenant's queue. Only the claim is system-scoped.
+  const claimed = await asSystem(db, "claimDueDeliveries", (tx) =>
+    tx.transaction(async (tx) => {
+      const rows = await tx
+        .select({ delivery: deliveries, channel: notificationChannels, event: events })
+        .from(deliveries)
+        .innerJoin(notificationChannels, eq(notificationChannels.id, deliveries.channelId))
+        .innerJoin(events, eq(events.id, deliveries.eventId))
+        .where(and(eq(deliveries.status, "pending"), lte(deliveries.nextAttemptAt, now)))
+        .orderBy(asc(deliveries.nextAttemptAt))
+        .limit(limit)
+        .for("update", { of: deliveries, skipLocked: true });
+      for (const r of rows) {
+        await tx
+          .update(deliveries)
+          .set({ attempts: sql`${deliveries.attempts} + 1`, nextAttemptAt: new Date(now.getTime() + 60_000) })
+          .where(eq(deliveries.id, r.delivery.id));
+      }
+      return rows;
+    }),
+  );
   const due: DueDelivery[] = [];
   for (const r of claimed) {
     const d: DueDelivery = {
@@ -231,14 +245,16 @@ export async function claimDueDeliveries(db: Db, limit = 20, now = new Date()): 
 }
 
 export async function markDelivered(db: Db, d: DueDelivery): Promise<void> {
-  await db
-    .update(deliveries)
-    .set({ status: "sent", sentAt: new Date(), lastError: null })
-    .where(eq(deliveries.id, d.id));
-  await db
-    .update(notificationChannels)
-    .set({ lastDeliveredAt: new Date(), lastError: null })
-    .where(eq(notificationChannels.id, d.channel.id));
+  return asTenant(db, d.event.orgId, async (db) => {
+    await db
+      .update(deliveries)
+      .set({ status: "sent", sentAt: new Date(), lastError: null })
+      .where(eq(deliveries.id, d.id));
+    await db
+      .update(notificationChannels)
+      .set({ lastDeliveredAt: new Date(), lastError: null })
+      .where(eq(notificationChannels.id, d.channel.id));
+  });
 }
 
 /** Schedules a retry (1m, 5m, 30m, 2h) or gives up after MAX_ATTEMPTS. */
@@ -249,32 +265,36 @@ export async function markDeliveryFailed(
   retryable: boolean,
   now = new Date(),
 ): Promise<"retry" | "failed"> {
-  const giveUp = !retryable || d.attempts >= MAX_ATTEMPTS;
-  const wait = BACKOFF_SECONDS[Math.min(d.attempts - 1, BACKOFF_SECONDS.length - 1)] ?? 7200;
-  await db
-    .update(deliveries)
-    .set({
-      status: giveUp ? "failed" : "pending",
-      lastError: error.slice(0, 500),
-      nextAttemptAt: new Date(now.getTime() + wait * 1000),
-    })
-    .where(eq(deliveries.id, d.id));
-  await db
-    .update(notificationChannels)
-    .set({ lastError: error.slice(0, 500) })
-    .where(eq(notificationChannels.id, d.channel.id));
-  return giveUp ? "failed" : "retry";
+  return asTenant(db, d.event.orgId, async (db) => {
+    const giveUp = !retryable || d.attempts >= MAX_ATTEMPTS;
+    const wait = BACKOFF_SECONDS[Math.min(d.attempts - 1, BACKOFF_SECONDS.length - 1)] ?? 7200;
+    await db
+      .update(deliveries)
+      .set({
+        status: giveUp ? "failed" : "pending",
+        lastError: error.slice(0, 500),
+        nextAttemptAt: new Date(now.getTime() + wait * 1000),
+      })
+      .where(eq(deliveries.id, d.id));
+    await db
+      .update(notificationChannels)
+      .set({ lastError: error.slice(0, 500) })
+      .where(eq(notificationChannels.id, d.channel.id));
+    return giveUp ? "failed" : "retry";
+  });
 }
 
 /** For "Send test": loads one channel's decrypted config. */
 export async function loadChannelForSend(db: Db, actor: Actor, id: string) {
-  assertCan(actor, "admin");
-  const [row] = await db
-    .select()
-    .from(notificationChannels)
-    .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
-  if (!row) throw new NotFoundError("Channel");
-  const config = await secretStore(db).get(configRef(row.orgId, row.id));
-  if (!config) throw new NotFoundError("Channel settings");
-  return { id: row.id, kind: row.kind, name: row.name, config };
+  return asTenant(db, actor.orgId, async (db) => {
+    assertCan(actor, "admin");
+    const [row] = await db
+      .select()
+      .from(notificationChannels)
+      .where(and(eq(notificationChannels.orgId, actor.orgId), eq(notificationChannels.id, id)));
+    if (!row) throw new NotFoundError("Channel");
+    const config = await secretStore(db).get(configRef(row.orgId, row.id));
+    if (!config) throw new NotFoundError("Channel settings");
+    return { id: row.id, kind: row.kind, name: row.name, config };
+  });
 }

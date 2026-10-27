@@ -16,8 +16,9 @@ every step by hand.
   or through [Hermes Agent](https://github.com/NousResearch/hermes-agent) and
   any other MCP client via the built-in MCP server.
 - **Self-hostable:** `docker compose up`.
-- **Built for multi-tenant production:** customer credentials live in HashiCorp Vault, never in
-  the database; every run, step, connection call and AI turn is traced with OpenTelemetry. See
+- **Built for multi-tenant production:** each workspace's data is isolated by Postgres row-level
+  security; customer credentials live in HashiCorp Vault, never in the database; every run, step,
+  connection call and AI turn is traced with OpenTelemetry. See
   [docs/platform-architecture.md](docs/platform-architecture.md) for where this is going (stream
   and batch engines, semantic catalog for Oracle, NetSuite and SAP).
 

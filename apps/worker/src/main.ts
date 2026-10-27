@@ -1,4 +1,5 @@
 import {
+  assertTenantIsolation,
   claimDueSchedules,
   createDb,
   EVENTS_CHANNEL,
@@ -108,6 +109,7 @@ async function reap(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await assertTenantIsolation(db, (msg) => log(msg));
   const boss = await getQueue({ worker: true });
   await boss.work<RunJob>(RUN_QUEUE, { localConcurrency: concurrency, batchSize: 1 }, async ([job]) => {
     if (!job) return;

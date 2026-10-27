@@ -8,7 +8,7 @@ import { assertRef, type SecretRef, type SecretStore, SecretStoreError, type Sec
 // should grant only that prefix:
 //
 //   path "oicr/data/tenants/*"     { capabilities = ["create", "update", "read"] }
-//   path "oicr/metadata/tenants/*" { capabilities = ["delete"] }
+//   path "oicr/metadata/tenants/*" { capabilities = ["delete", "list"] }
 //
 // Authentication, in order of preference for production:
 //   kubernetes  VAULT_K8S_ROLE (+ VAULT_K8S_MOUNT, service account token file)
@@ -293,6 +293,36 @@ export class VaultSecretStore implements SecretStore {
       const res = await this.client.call("DELETE", this.path(ref, "metadata"), undefined, [200, 204, 404]);
       if (![200, 204, 404].includes(res.status))
         throw new SecretStoreError("unavailable", `Vault refused the delete (${res.status}).`, res.status);
+    });
+  }
+
+  /** Lists and deletes every secret under tenants/{tenant}/ (KV v2 has no recursive delete). */
+  deleteTenant(tenant: string): Promise<number> {
+    assertRef({ tenant, kind: "connection", id: "x" });
+    return this.span("delete tenant", { tenant, kind: "connection", id: "*" }, async () => {
+      const list = async (path: string): Promise<string[]> => {
+        const res = await this.client.call("LIST", `${this.mount}/metadata/${path}`, undefined, [200, 404]);
+        if (res.status === 404) return [];
+        const keys = (res.body?.data as { keys?: unknown } | undefined)?.keys;
+        return Array.isArray(keys) ? keys.map(String) : [];
+      };
+      let removed = 0;
+      const walk = async (path: string) => {
+        for (const key of await list(path)) {
+          if (key.endsWith("/")) await walk(`${path}${key}`);
+          else {
+            const res = await this.client.call(
+              "DELETE",
+              `${this.mount}/metadata/${path}${key}`,
+              undefined,
+              [200, 204, 404],
+            );
+            if (res.status !== 404) removed++;
+          }
+        }
+      };
+      await walk(`tenants/${tenant}/`);
+      return removed;
     });
   }
 

@@ -3,6 +3,7 @@ import {
   type Actor,
   type AiSession,
   aiChanges,
+  asTenant,
   connectionIndex,
   createAiChange,
   createConnection,
@@ -274,12 +275,14 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
 
     case "get_flow": {
       const integration = session.integrationId ? await getIntegration(db, actor, session.integrationId) : null;
-      const [latest] = await db
-        .select()
-        .from(aiChanges)
-        .where(and(eq(aiChanges.sessionId, session.id)))
-        .orderBy(desc(aiChanges.createdAt))
-        .limit(1);
+      const [latest] = await asTenant(db, actor.orgId, (db) =>
+        db
+          .select()
+          .from(aiChanges)
+          .where(and(eq(aiChanges.sessionId, session.id)))
+          .orderBy(desc(aiChanges.createdAt))
+          .limit(1),
+      );
       return {
         content: json({
           integration: integration && {

@@ -3,6 +3,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
   type Actor,
+  asTenant,
   authenticateApiKey,
   createApiKey,
   createChannel,
@@ -249,11 +250,15 @@ describe.skipIf(!url)("events, channels and API keys (Postgres)", () => {
     });
     const okEvent = await ev("instance.succeeded");
     const badEvent = await ev("instance.failed", "error");
-    const rows = await db!.select().from(deliveries).where(eq(deliveries.eventId, okEvent.id));
+    const rows = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(deliveries).where(eq(deliveries.eventId, okEvent.id)),
+    );
     // neither the failures-only nor the errors-only channel wants a success (the "*" Telegram channel does)
     expect(rows.map((d) => d.channelId)).not.toContain(failuresOnly.id);
     expect(rows.map((d) => d.channelId)).not.toContain(errorsOnly.id);
-    const bad = await db!.select().from(deliveries).where(eq(deliveries.eventId, badEvent.id));
+    const bad = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(deliveries).where(eq(deliveries.eventId, badEvent.id)),
+    );
     expect(bad.map((d) => d.channelId).sort()).toEqual(expect.arrayContaining([failuresOnly.id, errorsOnly.id]));
 
     const r = await drain({ appUrl: "https://app.example.com", telegramApiBase: base });
@@ -271,16 +276,20 @@ describe.skipIf(!url)("events, channels and API keys (Postgres)", () => {
     const e = await ev("instance.failed", "error");
     const r = await drain({ appUrl: "x", telegramApiBase: base });
     expect(r.retry).toBeGreaterThan(0);
-    const [row] = await db!.select().from(deliveries).where(eq(deliveries.eventId, e.id)).limit(1);
+    const [row] = await asTenant(db!, actor.orgId, (db) =>
+      db.select().from(deliveries).where(eq(deliveries.eventId, e.id)).limit(1),
+    );
     expect(row!.status).toBe("pending");
     expect(row!.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() + 50_000);
     expect(row!.lastError).toContain("503");
 
     status = 400;
-    await db!
-      .update(deliveries)
-      .set({ nextAttemptAt: new Date(0) })
-      .where(eq(deliveries.eventId, e.id));
+    await asTenant(db!, actor.orgId, (db) =>
+      db
+        .update(deliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(deliveries.eventId, e.id)),
+    );
     const r2 = await drain({ appUrl: "x", telegramApiBase: base });
     expect(r2.failed).toBeGreaterThan(0);
   });

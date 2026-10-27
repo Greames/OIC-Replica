@@ -24,6 +24,8 @@ export interface SecretStore {
   delete(ref: SecretRef): Promise<void>;
   /** Whether the store is reachable and writable by this service. */
   check(): Promise<{ ok: boolean; message: string }>;
+  /** Offboarding: removes every secret of a tenant. Returns how many were removed. */
+  deleteTenant(tenant: string): Promise<number>;
 }
 
 export type SecretErrorKind = "unavailable" | "forbidden" | "invalid" | "misconfigured";
@@ -96,6 +98,10 @@ export function cachedStore(
       entries.delete(refKey(ref));
     },
     check: () => inner.check(),
+    async deleteTenant(tenant) {
+      for (const key of [...entries.keys()]) if (key.startsWith(`${tenant}/`)) entries.delete(key);
+      return inner.deleteTenant(tenant);
+    },
   };
 }
 
@@ -119,6 +125,16 @@ export function memoryStore(): SecretStore & { size(): number } {
     },
     async check() {
       return { ok: true, message: "In-memory store." };
+    },
+    async deleteTenant(tenant) {
+      assertRef({ tenant, kind: "connection", id: "x" });
+      let n = 0;
+      for (const key of [...data.keys()])
+        if (key.startsWith(`${tenant}/`)) {
+          data.delete(key);
+          n++;
+        }
+      return n;
     },
     size: () => data.size,
   };

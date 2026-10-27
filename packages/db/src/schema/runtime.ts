@@ -182,6 +182,10 @@ export const instanceSteps = pgTable(
   "instance_steps",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    /** Copied from the parent row, so row-level security can check it directly. */
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => orgs.id, { onDelete: "cascade" }),
     instanceId: uuid("instance_id")
       .notNull()
       .references(() => instances.id, { onDelete: "cascade" }),

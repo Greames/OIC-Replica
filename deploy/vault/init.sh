@@ -36,7 +36,7 @@ path "oicr/data/tenants/*" {
   capabilities = ["create", "update", "read"]
 }
 path "oicr/metadata/tenants/*" {
-  capabilities = ["delete"]
+  capabilities = ["delete", "list"]
 }
 POLICY
 

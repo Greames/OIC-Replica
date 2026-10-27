@@ -1,6 +1,8 @@
 import { AdapterError, getAdapter } from "@oicr/adapters";
 import {
   appendStep,
+  asSystem,
+  asTenant,
   capPayload,
   type Db,
   finishInstance,
@@ -68,14 +70,20 @@ export function executeInstance(db: Db, instanceId: string, opts: ExecuteOptions
 async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): Promise<ExecuteResult> {
   const instance = await startInstance(db, instanceId);
   if (!instance) {
-    const [current] = await db.select().from(instances).where(eq(instances.id, instanceId));
+    // Another worker claimed it: report its current state.
+    const [current] = await asSystem(db, "executeInstance:claimed", (db) =>
+      db.select().from(instances).where(eq(instances.id, instanceId)),
+    );
     return { instance: current!, result: null };
   }
 
-  const [integration] = await db.select().from(integrations).where(eq(integrations.id, instance.integrationId));
+  // From here on, everything runs as the run's own tenant.
+  const [integration] = await asTenant(db, instance.orgId, (db) =>
+    db.select().from(integrations).where(eq(integrations.id, instance.integrationId)),
+  );
   if (!integration) {
     return {
-      instance: await finishInstance(db, instanceId, {
+      instance: await finishInstance(db, instance, {
         status: "failed",
         errorCode: "integration_missing",
         errorMessage: "The integration was deleted.",
@@ -86,7 +94,7 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
   const parsed = FlowDoc.safeParse(integration.definition);
   if (!parsed.success) {
     return {
-      instance: await finishInstance(db, instanceId, {
+      instance: await finishInstance(db, instance, {
         status: "failed",
         errorCode: "invalid_definition",
         errorMessage: "The integration's definition is not valid. Open it to see the problems.",
@@ -136,7 +144,7 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
     },
     async record(rec) {
       const failed = rec.status === "failed";
-      await appendStep(db, instanceId, {
+      await appendStep(db, instance, {
         seq: rec.seq,
         stepId: rec.stepId,
         stepType: rec.stepType,
@@ -157,7 +165,7 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
     result = await runFlow(parsed.data, instance.input ?? {}, deps);
   } catch (e) {
     return {
-      instance: await finishInstance(db, instanceId, {
+      instance: await finishInstance(db, instance, {
         status: "failed",
         errorCode: "engine_error",
         errorMessage: (e as Error).message,
@@ -166,7 +174,7 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
     };
   }
 
-  const finished = await finishInstance(db, instanceId, {
+  const finished = await finishInstance(db, instance, {
     status: result.fault?.code === "aborted" ? "aborted" : result.status,
     output: result.response ? keep(result.response, false) : null,
     errorCode: result.fault?.code ?? null,
