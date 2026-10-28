@@ -390,6 +390,12 @@ async function runFlowInner(doc: FlowDoc, trigger: unknown, deps: EngineDeps): P
             message: "JavaScript library steps arrive in a later release.",
             stepId: step.id,
           });
+        case "pipeline":
+          throw new FaultSignal({
+            code: "not_supported",
+            message: "Batch pipelines need the batch engine, which is not available here yet.",
+            stepId: step.id,
+          });
         case "switch": {
           let taken = -1;
           for (const [i, c] of step.cases.entries()) {

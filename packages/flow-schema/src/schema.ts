@@ -148,6 +148,39 @@ export const JsStep = z.object({
   args: z.array(Expression).default([]),
 });
 
+/**
+ * A batch pipeline (batch engine): reads a source in chunks, transforms each
+ * record, and writes chunks to a target, with bounded memory, a checkpoint
+ * per chunk (a crashed run resumes where it stopped) and rejected records
+ * kept aside instead of failing the run. Its output is the counts, never the data.
+ */
+export const PipelineStep = z.object({
+  ...base,
+  type: z.literal("pipeline"),
+  source: z.object({
+    connection: z.string().min(1).describe("connection whose adapter can read in batches (e.g. database)"),
+    operation: z.string().min(1).describe('e.g. "read"'),
+    config: z.record(z.string(), z.unknown()).default({}).describe("e.g. { sql, key } for a database"),
+    params: Expression.optional().describe("evaluated once before reading; gives the source's parameters"),
+  }),
+  filter: Expression.optional().describe("per record ($record, also the context): false skips it"),
+  transform: Expression.optional().describe("per record ($record): the record to write; default: unchanged"),
+  target: z.object({
+    connection: z.string().min(1).describe("connection whose adapter can write in batches"),
+    operation: z.string().min(1).describe('e.g. "upsert" or "insert"'),
+    config: z.record(z.string(), z.unknown()).default({}).describe("e.g. { table, key } for a database"),
+  }),
+  chunkSize: z.number().int().min(1).max(10_000).default(500),
+  concurrency: z.number().int().min(1).max(8).default(2).describe("chunks transformed and written at once"),
+  maxRejects: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_000_000)
+    .default(100)
+    .describe("rejected records allowed before the step fails"),
+});
+
 // Container steps hold other steps. Their types are written out by hand so
 // the recursion through `Step` stays explicit for TypeScript.
 
@@ -192,7 +225,8 @@ export type LeafStep =
   | z.infer<typeof WaitStep>
   | z.infer<typeof StopStep>
   | z.infer<typeof ReturnStep>
-  | z.infer<typeof JsStep>;
+  | z.infer<typeof JsStep>
+  | z.infer<typeof PipelineStep>;
 
 export type Step = LeafStep | SwitchStep | ForEachStep | WhileStep | ScopeStep;
 
@@ -250,6 +284,7 @@ export const Step: z.ZodType<Step> = z
     StopStep,
     ReturnStep,
     JsStep,
+    PipelineStep,
     SwitchStepSchema,
     ForEachStepSchema,
     WhileStepSchema,
@@ -269,6 +304,7 @@ export const StepType = z.enum([
   "stop",
   "return",
   "js",
+  "pipeline",
   "switch",
   "forEach",
   "while",

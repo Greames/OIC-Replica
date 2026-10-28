@@ -20,6 +20,7 @@ import {
   CalendarClock,
   Clock,
   CornerUpLeft,
+  Database,
   FileText,
   Flag,
   GitBranch,
@@ -56,6 +57,7 @@ export const STEP_ICONS: Record<Step["type"], LucideIcon> = {
   stop: Ban,
   return: Reply,
   js: SquareCode,
+  pipeline: Database,
 };
 
 /** One line saying what a step does, for the box on the canvas. */
@@ -85,6 +87,10 @@ export function stepSummary(s: Step): string {
       return s.code;
     case "return":
       return `HTTP ${s.status}`;
+    case "pipeline":
+      return s.source.connection && s.target.connection
+        ? `${s.source.connection} → ${s.target.connection} · ${s.chunkSize}/chunk`
+        : "Pick a source and a target";
     default:
       return STEP_INFO[s.type].label;
   }
