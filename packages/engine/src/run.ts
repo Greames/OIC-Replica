@@ -39,6 +39,15 @@ export interface InvokeCall {
   signal?: AbortSignal;
 }
 
+export interface PipelineCall {
+  step: Extract<Step, { type: "pipeline" }>;
+  /** The source's evaluated params. */
+  params: Record<string, unknown>;
+  /** $trigger, $vars and earlier steps' outputs for per-record expressions. */
+  bindings: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
 export interface EngineDeps {
   /** Calls the connection's adapter. Throw an error with `code` (and `retryable`) to fault. */
   invoke(call: InvokeCall): Promise<unknown>;
@@ -57,6 +66,11 @@ export interface EngineDeps {
    * of the run's plan). A step id of the same name shadows a function.
    */
   functions?: Record<string, (...args: never[]) => unknown>;
+  /**
+   * Runs a pipeline step on the batch engine and returns its counts. Missing
+   * outside the batch engine: the step then fails.
+   */
+  pipeline?(call: PipelineCall): Promise<unknown>;
   /** Jitter source for retry waits (tests pass a fixed one). */
   random?(): number;
 }
@@ -390,12 +404,43 @@ async function runFlowInner(doc: FlowDoc, trigger: unknown, deps: EngineDeps): P
             message: "JavaScript library steps arrive in a later release.",
             stepId: step.id,
           });
-        case "pipeline":
-          throw new FaultSignal({
-            code: "not_supported",
-            message: "Batch pipelines need the batch engine, which is not available here yet.",
-            stepId: step.id,
-          });
+        case "pipeline": {
+          if (!deps.pipeline)
+            throw new FaultSignal({
+              code: "batch_engine_required",
+              message: "Pipelines run on the batch engine; this run was started somewhere else.",
+              stepId: step.id,
+            });
+          const params = step.source.params ? await evaluate(step.source.params, scope, step.id) : {};
+          if (params !== undefined && (params === null || typeof params !== "object" || Array.isArray(params)))
+            throw new FaultSignal({
+              code: "invalid_params",
+              message: 'The source\'s params must give an object, e.g. { "since": $trigger.scheduledFor }.',
+              stepId: step.id,
+            });
+          input = params ?? {};
+          try {
+            output = plain(
+              await deps.pipeline({
+                step,
+                params: (params ?? {}) as Record<string, unknown>,
+                // What per-record expressions can read: plain data, copied when the pipeline starts.
+                bindings: plain({ ...outputs, ...scope.loop, trigger, vars }) as Record<string, unknown>,
+                signal: deps.signal,
+              }),
+            );
+          } catch (e) {
+            const err = e as { code?: string; message?: string; details?: unknown; counts?: unknown };
+            throw new FaultSignal({
+              code: err.code ?? "pipeline_failed",
+              message: err.message ?? String(e),
+              stepId: step.id,
+              details: { ...(err.details as object), ...(err.counts ? { counts: err.counts } : {}) },
+            });
+          }
+          outputs[step.id] = output;
+          break;
+        }
         case "switch": {
           let taken = -1;
           for (const [i, c] of step.cases.entries()) {

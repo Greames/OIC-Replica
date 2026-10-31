@@ -16,12 +16,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@oicr/platform": "workspace:*",
+    "mysql2": "^3.24.6",
+    "oracledb": "^6.10.0",
+    "postgres": "^3.4.9",
     "undici": "^8.12.3",
-    "zod": "^4.6.7",
-    "@oicr/platform": "workspace:*"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22",
+    "@types/oracledb": "^26.0.1",
     "typescript": "^5.9.0",
     "vitest": "^5.0.5"
   }

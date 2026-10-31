@@ -5,6 +5,7 @@ import { type InstanceStatus, instanceSteps, instances, integrations, schedules 
 import { asSystem, asTenant } from "../tenancy.js";
 import { type Actor, assertCan, NotFoundError } from "./access.js";
 import { emitEvent } from "./events.js";
+import { laneFor } from "./pipelines.js";
 
 export type Instance = typeof instances.$inferSelect;
 export type InstanceStep = typeof instanceSteps.$inferSelect;
@@ -14,7 +15,13 @@ export async function createInstance(
   db: Db,
   args: {
     orgId: string;
-    integration: { id: string; version: string; definitionHash: string; activePlanId?: string | null };
+    integration: {
+      id: string;
+      version: string;
+      definitionHash: string;
+      activePlanId?: string | null;
+      definition?: unknown;
+    };
     triggerKind: Instance["triggerKind"];
     input: unknown;
     idempotencyKey?: string | null;
@@ -34,6 +41,7 @@ export async function createInstance(
         input: args.input ?? null,
         idempotencyKey: args.idempotencyKey ?? null,
         parentInstanceId: args.parentInstanceId ?? null,
+        lane: laneFor(args.integration.definition),
       })
       .onConflictDoNothing()
       .returning();
@@ -147,7 +155,8 @@ export async function startInstance(db: Db, id: string): Promise<Instance | null
   return asSystem(db, "startInstance", async (db) => {
     const [row] = await db
       .update(instances)
-      .set({ status: "running", startedAt: new Date() })
+      // A resumed batch run keeps its first start time.
+      .set({ status: "running", startedAt: sql`coalesce(${instances.startedAt}, now())`, heartbeatAt: new Date() })
       .where(and(eq(instances.id, id), eq(instances.status, "queued")))
       .returning();
     return row ?? null;
@@ -237,7 +246,8 @@ export async function failStaleInstances(db: Db, olderThanMs: number): Promise<n
         errorMessage: "The worker running this stopped before it finished. Resubmit it to run again.",
         endedAt: new Date(),
       })
-      .where(and(eq(instances.status, "running"), lt(instances.startedAt, cutoff)))
+      // Batch runs are resumed from checkpoints instead (requeueStaleBatchRuns).
+      .where(and(eq(instances.status, "running"), eq(instances.lane, "standard"), lt(instances.startedAt, cutoff)))
       .returning({ id: instances.id });
     return rows.length;
   });

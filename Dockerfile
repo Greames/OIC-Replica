@@ -1,4 +1,4 @@
-# One image for web, worker and the migrate job.
+# One image for web, worker, stream and batch engines, and the migrate job.
 FROM node:22-alpine AS base
 RUN corepack enable
 WORKDIR /app
@@ -12,6 +12,7 @@ COPY packages/flow-schema/package.json packages/flow-schema/
 COPY packages/platform/package.json packages/platform/
 COPY packages/vault/package.json packages/vault/
 COPY packages/semantic/package.json packages/semantic/
+COPY packages/batch/package.json packages/batch/
 COPY packages/db/package.json packages/db/
 COPY packages/auth/package.json packages/auth/
 COPY packages/adapters/package.json packages/adapters/
@@ -20,6 +21,7 @@ COPY packages/runtime/package.json packages/runtime/
 COPY packages/ai/package.json packages/ai/
 COPY packages/notify/package.json packages/notify/
 COPY apps/worker/package.json apps/worker/
+COPY apps/batch/package.json apps/batch/
 COPY apps/stream/package.json apps/stream/
 
 FROM manifests AS build
@@ -34,6 +36,7 @@ COPY --from=build /app/packages/flow-schema/dist packages/flow-schema/dist
 COPY --from=build /app/packages/platform/dist packages/platform/dist
 COPY --from=build /app/packages/vault/dist packages/vault/dist
 COPY --from=build /app/packages/semantic/dist packages/semantic/dist
+COPY --from=build /app/packages/batch/dist packages/batch/dist
 COPY --from=build /app/packages/db/dist packages/db/dist
 COPY --from=build /app/packages/db/migrations packages/db/migrations
 COPY --from=build /app/packages/auth/dist packages/auth/dist
@@ -43,6 +46,7 @@ COPY --from=build /app/packages/runtime/dist packages/runtime/dist
 COPY --from=build /app/packages/ai/dist packages/ai/dist
 COPY --from=build /app/packages/notify/dist packages/notify/dist
 COPY --from=build /app/apps/worker/dist apps/worker/dist
+COPY --from=build /app/apps/batch/dist apps/batch/dist
 COPY --from=build /app/apps/stream/dist apps/stream/dist
 COPY --from=build /app/apps/web/.next apps/web/.next
 COPY --from=build /app/apps/web/next.config.ts apps/web/

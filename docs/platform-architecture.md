@@ -71,8 +71,9 @@ document records the decisions, the target topology, and the order in which it i
   agents per connection; target overhead p99 < 5 ms excluding downstream calls.
 - Async triggers return 202 after persisting the run and enqueueing it.
 
-**Batch engine** (`apps/batch`): pipelines built from async iterators.
-- `source` (paged API reads, database cursors, files) → `chunk(n)` → `transform` (JSONata on a
+**Batch engine** (`apps/batch`): pipelines built from async iterators (built in P4 for
+databases; see the P4 notes).
+- `source` (paged API reads, database keyset pages, files) → `chunk(n)` → `transform` (JSONata on a
   `worker_threads` pool) → `sink` (bulk APIs: Fusion REST batch / FBDI, NetSuite SuiteTalk async,
   SAP OData `$batch`, database `COPY`/multi-row insert).
 - Memory is bounded by `chunkSize × concurrency`; backpressure comes from awaiting the sink.
@@ -241,6 +242,59 @@ document records the decisions, the target topology, and the order in which it i
   (a reference holds the other entity's number, which the flow must supply), and a catalog
   version upgrade path for workspace layers.
 
+## P4 notes (done): batch engine and database adapter
+
+- **Database adapter** (`packages/adapters/src/database`): PostgreSQL (postgres.js), MySQL
+  (mysql2) and Oracle (node-oracledb in thin mode: no Instant Client, works for EBS). Pooled
+  per connection settings, idle pools closed. Hosts are resolved and checked against the
+  private-network rule before connecting. Parameters are `:name`, always bound (a tokenizer
+  skips strings, comments and casts); identifiers are checked against a strict pattern rather
+  than quoted, so each database keeps its case rules. Oracle sessions use ISO date formats and
+  UTC. Errors are classified (auth, connection, deadlock and serialization retryable; SQL
+  errors with SQLSTATE / ORA numbers not).
+  - Step operations: `query` (capped at `maxRows`), `execute`, `insert`, `upsert`.
+  - Batch reads: keyset pagination on a unique, sortable `key`
+    (`SELECT q.* FROM (<query>) q WHERE q.key > :after ORDER BY q.key LIMIT n`, `FETCH FIRST`
+    on Oracle); each page is its own short query, and the cursor is the last key.
+  - Batch writes: multi-row `INSERT … ON CONFLICT DO UPDATE` (Postgres), `ON DUPLICATE KEY
+    UPDATE` (MySQL), `MERGE` through `executeMany` with batch errors (Oracle), in one
+    transaction per chunk (statements split under the bind limit). When a chunk fails for a
+    non-retryable reason it is rolled back and written row by row, so good rows land and bad
+    rows are named.
+- **Pipeline step** (FlowDoc): source (connection, operation `read`, config, `params`
+  evaluated once), optional per-record `filter` and `transform` (`$record`; `$translate`,
+  `$lookupValue`, `$trigger` and earlier outputs work), target (`insert` / `upsert`),
+  `chunkSize`, `concurrency`, `maxRejects`. Validation refuses pipelines in sync flows and in
+  loops, non-batch connections or operations, and (via the adapter) bad source/target
+  configuration, at save time. Its output is counts only.
+- **`packages/batch`**: `runPipeline` reads only when a slot is free (at most `concurrency`
+  chunks in flight), retries retryable writes with backoff, commits rejects and checkpoints
+  strictly in chunk order, fails past `maxRejects`, and stops on abort. Transforms run on a
+  `worker_threads` pool: expressions compiled once per worker, lookups preloaded, the plan's
+  semantic bindings included, a heap limit per worker, a per-chunk timeout that replaces a
+  runaway worker.
+- **Lanes and resume** (migration 0009): runs of flows with a pipeline are on the `batch` lane
+  and queue to `run-batch`, consumed by `apps/batch` (the standard worker never runs them;
+  elsewhere the step fails with `batch_engine_required`). `pipeline_checkpoints` keeps the
+  cursor and counts per run and step; `pipeline_rejects` the set-aside records (shortened,
+  first 10 000 per step). Batch runs heartbeat; `requeueStaleBatchRuns` puts quiet runs back
+  on the queue (attempts + 1) and fails them after `BATCH_MAX_ATTEMPTS`. A resumed run replays
+  the steps before the pipeline, skips a pipeline already done, and continues an unfinished one
+  after its last checkpoint; upserts make the replayed chunk harmless. On SIGTERM the engine
+  stops taking runs, waits `BATCH_DRAIN_SECONDS`, and leaves the rest to resume.
+- UI: database connections (adapter picker), a pipeline inspector on the canvas, and pipeline
+  progress plus rejected records on the run page. The AI builder knows when to use a pipeline.
+- Verified: live adapter tests on PostgreSQL 16, MySQL 8.4 and Oracle 23ai (chunked loads,
+  keyset reads and resume, idempotent upserts with row-level rejects, query caps); pipeline
+  runner and worker-pool tests; a runtime test loading Postgres into MySQL through worker
+  threads with lookups, filters, a rejected row, resume from a checkpoint and stale-run requeue;
+  an e2e test from creating the connection to the run page; and in docker compose a
+  1 000 000-row load whose batch engine was killed at 558 000 rows: it resumed (attempt 2) and
+  finished with exactly 1 000 000 correct rows, the engine using 160–230 MB throughout.
+- Not yet: composite keys for reads, file and API sources (SFTP, paged REST, Fusion/NetSuite/SAP
+  bulk APIs come with P5), `COPY`-based Postgres loads, and running a pipeline across several
+  engines at once.
+
 ## Build order
 
 | step | delivers |
@@ -248,6 +302,6 @@ document records the decisions, the target topology, and the order in which it i
 | **P1 Trust foundations** ✅ | `packages/platform` (retry policy, tracing helpers, OTel bootstrap); tracing on every execution block; `packages/vault` (Vault KV v2 + dev backend); connection credentials and channel configs moved to the store; trigger tokens hashed; Vault in docker compose; migration of existing secrets |
 | **P2 Stream engine + tenant isolation** ✅ | `apps/stream` service owning `/t/…`; execution plans; Postgres RLS; per-tenant queues, quotas and fair scheduling; circuit breakers |
 | **P3 Semantic catalog** ✅ | catalog and bindings model, seed bindings for Fusion, EBS, NetSuite, SAP; AI binding proposals with review; `$toSemantic` / `$fromSemantic` / `$translate`; compile at activation |
-| P4 Batch engine | pipeline runtime, worker-thread transforms, checkpoints, reject stream; database adapter (Postgres, Oracle, MySQL) |
+| **P4 Batch engine** ✅ | pipeline runtime, worker-thread transforms, checkpoints, reject stream; database adapter (Postgres, Oracle, MySQL) |
 | P5 ERP connectors | Oracle Fusion REST + FBDI, NetSuite REST/SuiteTalk, SAP OData; their bulk paths for the batch engine |
 | P6 Operations | errors list with resubmit, dashboards on the traces and run data, AI failure explanations |

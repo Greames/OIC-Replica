@@ -42,6 +42,6 @@ export async function startRun(
     };
   }
   const limits = await tenantLimits(db, integration.orgId);
-  await enqueueRun(instance.id, { tenant: integration.orgId, tier: limits.tier });
+  await enqueueRun(instance.id, { tenant: integration.orgId, tier: limits.tier }, instance.lane);
   return { instanceId: instance.id, duplicate, status: "queued" };
 }

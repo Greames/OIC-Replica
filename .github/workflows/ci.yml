@@ -18,6 +18,16 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U oicr" --health-interval 3s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: oicr
+          MYSQL_USER: oicr
+          MYSQL_PASSWORD: oicr
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -proot" --health-interval 5s --health-timeout 5s --health-retries 20
       vault:
         image: hashicorp/vault:1.20
         env:
@@ -32,6 +42,9 @@ jobs:
       AUTH_RATE_LIMIT: "off"
       SECRETS_KEY: c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1 # CI only
       ALLOW_PRIVATE_NETWORK: "true"
+      # Live database adapter tests (Oracle runs locally: ADAPTER_TEST_ORACLE=oracle://user:pw@host:1521/FREEPDB1)
+      ADAPTER_TEST_POSTGRES: postgres://oicr:oicr@localhost:5432/oicr
+      ADAPTER_TEST_MYSQL: mysql://oicr:oicr@127.0.0.1:3306/oicr
       # Credentials go to a real Vault (dev server) in every test, as in production.
       VAULT_ADDR: http://127.0.0.1:8200
       VAULT_TOKEN: root

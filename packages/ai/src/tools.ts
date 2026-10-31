@@ -1,4 +1,4 @@
-import { adapters } from "@oicr/adapters";
+import { adapters, batchOperations } from "@oicr/adapters";
 import {
   type Actor,
   type AiSession,
@@ -481,6 +481,7 @@ async function proposeFlow(input: unknown, ctx: ToolContext): Promise<ToolOutcom
     connections: await connectionIndex(db, actor.orgId),
     lookups: await lookupNames(db, actor.orgId),
     semanticObjects: (await loadSemanticGraph(db, actor.orgId)).objectIndex(),
+    batchOperations: batchOperations(),
   });
   const errors: Issue[] = [...result.errors];
   if (integration && (flow as { style?: string }).style !== integration.style) {

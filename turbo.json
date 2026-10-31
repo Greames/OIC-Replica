@@ -40,6 +40,8 @@
     "STREAM_*",
     "TIER_*",
     "BREAKER_*",
+    "BATCH_*",
+    "ADAPTER_TEST_*",
     "ALLOW_PRIVATE_NETWORK",
     "RESEND_API_KEY",
     "EMAIL_FROM",

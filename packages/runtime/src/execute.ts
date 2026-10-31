@@ -7,6 +7,7 @@ import {
   type Db,
   emitEvent,
   finishInstance,
+  heartbeat,
   type Instance,
   instances,
   integrations,
@@ -32,6 +33,10 @@ import { type SemanticFunctions, type SemanticPlan, semanticFunctions } from "@o
 import { SecretStoreError } from "@oicr/vault";
 import { eq, sql } from "drizzle-orm";
 import { emailNotifier } from "./email.js";
+import { runPipelineStep } from "./pipeline.js";
+
+/** How often a batch run reports that it is alive (the batch engine resumes runs that go quiet). */
+const HEARTBEAT_MS = Number(process.env.BATCH_HEARTBEAT_SECONDS ?? 20) * 1000;
 
 /** Breakers for this process, by "tenant:connection". Openings are announced as events. */
 export const breakers = new BreakerRegistry(
@@ -73,6 +78,8 @@ export interface ExecuteOptions {
   signal?: AbortSignal;
   /** Trace context to continue (from the queued job or the HTTP request). */
   parent?: Context;
+  /** Run pipeline steps here (the batch engine); elsewhere they fail. */
+  batch?: boolean;
   /** Overrides for tests. */
   deps?: Partial<EngineDeps>;
 }
@@ -169,6 +176,25 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
       ? null
       : capPayload(v, tracing === "debug" ? PAYLOAD_LIMITS.debug : PAYLOAD_LIMITS.audit);
 
+  /** Calls through the tenant's breaker for a connection; an open circuit is a retryable fault. */
+  const guard = async <T>(connection: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await breakers
+        .get(`${instance.orgId}:${connection}`)
+        .run(fn, (e) => e instanceof AdapterError && e.retryable && e.code !== "aborted");
+    } catch (e) {
+      if (e instanceof CircuitOpenError)
+        throw new AdapterError(
+          "circuit_open",
+          `${e.message} (connection "${connection}")`,
+          { connection },
+          true,
+          e.retryAfterMs,
+        );
+      throw e;
+    }
+  };
+
   const deps: EngineDeps = {
     signal: opts.signal,
     notify: emailNotifier(),
@@ -199,30 +225,20 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
       }
       const resolved = conn;
       // One breaker per tenant and connection: a failing system is paused, not hammered.
-      const breaker = breakers.get(`${instance.orgId}:${call.connection}`);
-      try {
-        return await breaker.run(
-          () =>
-            getAdapter(resolved.adapter).invoke(resolved.config, {
-              operation: call.operation,
-              config: call.config,
-              request: call.request,
-              signal: call.signal,
-            }),
-          (e) => e instanceof AdapterError && e.retryable && e.code !== "aborted",
-        );
-      } catch (e) {
-        if (e instanceof CircuitOpenError)
-          throw new AdapterError(
-            "circuit_open",
-            `${e.message} (connection "${call.connection}")`,
-            { connection: call.connection },
-            true,
-            e.retryAfterMs,
-          );
-        throw e;
-      }
+      return guard(call.connection, () =>
+        getAdapter(resolved.adapter).invoke(resolved.config, {
+          operation: call.operation,
+          config: call.config,
+          request: call.request,
+          signal: call.signal,
+        }),
+      );
     },
+    ...(opts.batch
+      ? {
+          pipeline: (call) => runPipelineStep({ db, instance, semantics: integration.semantics ?? null, guard }, call),
+        }
+      : {}),
     async record(rec) {
       const failed = rec.status === "failed";
       await appendStep(db, instance, {
@@ -242,6 +258,11 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
   };
 
   let result: RunResult;
+  // Batch runs report that they are alive; a run that goes quiet is resumed by another batch engine.
+  const beat =
+    instance.lane === "batch"
+      ? setInterval(() => void heartbeat(db, instance).catch(() => {}), HEARTBEAT_MS)
+      : undefined;
   try {
     result = await runFlow(parsed.data, instance.input ?? {}, deps);
   } catch (e) {
@@ -253,6 +274,8 @@ async function executeInner(db: Db, instanceId: string, opts: ExecuteOptions): P
       }),
       result: null,
     };
+  } finally {
+    clearInterval(beat);
   }
 
   const finished = await finishInstance(db, instance, {

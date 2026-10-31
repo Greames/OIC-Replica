@@ -26,6 +26,7 @@ const updated = () =>
     .defaultNow()
     .$onUpdate(() => new Date());
 
+export const RUN_LANES = ["standard", "batch"] as const;
 export const CONNECTION_ROLES = ["trigger", "invoke", "trigger_invoke"] as const;
 export const AUTH_TYPES = ["none", "basic", "api_key", "bearer"] as const;
 export const CONNECTION_STATUSES = ["draft", "configured", "failed"] as const;
@@ -172,16 +173,25 @@ export const instances = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     endedAt: timestamp("ended_at", { withTimezone: true }),
     durationMs: integer("duration_ms"),
+    /** "batch": the flow has a pipeline, so the batch engine runs it (and resumes it after a crash). */
+    lane: text("lane", { enum: RUN_LANES }).notNull().default("standard"),
+    /** Batch runs: last sign of life from the engine running it. */
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+    /** How many times a batch run was started (a resumed run counts again). */
+    attempts: integer("attempts").notNull().default(1),
     createdAt: created(),
   },
   (t) => [
     index().on(t.orgId, t.createdAt),
+    index().on(t.lane, t.status),
     index().on(t.integrationId, t.createdAt),
     index().on(t.orgId, t.status, t.createdAt),
     index().on(t.orgId, t.primaryBusinessId),
     uniqueIndex().on(t.integrationId, t.idempotencyKey).where(sql`${t.idempotencyKey} is not null`),
   ],
 );
+
+export type RunLane = (typeof RUN_LANES)[number];
 
 /** S22 activity stream. One row per executed step (per loop iteration). */
 export const instanceSteps = pgTable(
