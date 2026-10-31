@@ -22,7 +22,10 @@ export type IssueCode =
   | "semantic_call"
   | "unknown_semantic_object"
   | "semantic_mismatch"
-  | "required_unmapped";
+  | "required_unmapped"
+  | "pipeline_in_sync_flow"
+  | "pipeline_in_loop"
+  | "pipeline_connection";
 
 export interface Issue {
   code: IssueCode;
@@ -44,6 +47,11 @@ export interface ValidationContext {
    * given, $toSemantic/$fromSemantic/$translate are checked against them.
    */
   semanticObjects?: Record<string, string>;
+  /**
+   * Batch operations per adapter id. When given, a pipeline's source and
+   * target must use an adapter and operation listed here.
+   */
+  batchOperations?: Record<string, { read: string[]; write: string[] }>;
 }
 
 export type ValidationResult =
@@ -133,6 +141,27 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
       }
     }
     if (step.type === "invoke") checkConnection(step.connection, "invoke", at("connection"), step.id);
+    if (step.type === "pipeline") {
+      if (syncHttp)
+        errors.push({
+          code: "pipeline_in_sync_flow",
+          message:
+            "A pipeline can run for a long time, so it cannot be part of a sync request. Make the trigger async (sync: false) or run it on a schedule.",
+          path: at("type"),
+          stepId: step.id,
+        });
+      if (c.inLoop)
+        errors.push({
+          code: "pipeline_in_loop",
+          message: "A pipeline cannot be inside a forEach or while; it already processes every record of its source.",
+          path: at("type"),
+          stepId: step.id,
+        });
+      checkConnection(step.source.connection, "invoke", at("source", "connection"), step.id);
+      checkConnection(step.target.connection, "invoke", at("target", "connection"), step.id);
+      checkBatch(step.source.connection, "read", step.source.operation, at("source"), step.id);
+      checkBatch(step.target.connection, "write", step.target.operation, at("target"), step.id);
+    }
     if (step.type === "js" && ctx.libraries && !ctx.libraries.includes(step.library)) {
       errors.push({
         code: "unknown_library",
@@ -154,7 +183,7 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
       });
     }
 
-    for (const e of expressionsOf(step)) checkExpression(e.source, at(...e.key), c, e.template);
+    for (const e of expressionsOf(step)) checkExpression(e.source, at(...e.key), c, e.template, e.record);
 
     // A target schema's required fields should be filled.
     if (step.type === "map" && Array.isArray(step.targetSchema?.required)) {
@@ -225,7 +254,41 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
     }
   }
 
-  function checkExpression(source: string, path: (string | number)[], c: StepContext | null, template: boolean): void {
+  function checkBatch(
+    connection: string,
+    kind: "read" | "write",
+    operation: string,
+    path: (string | number)[],
+    stepId: string,
+  ): void {
+    const conn = ctx.connections?.[connection];
+    if (!ctx.batchOperations || !conn) return;
+    const ops = ctx.batchOperations[conn.adapter];
+    const role = kind === "read" ? "source" : "target";
+    if (!ops) {
+      errors.push({
+        code: "pipeline_connection",
+        message: `Connection "${connection}" uses the ${conn.adapter} adapter, which cannot be a pipeline ${role}. Use a database connection.`,
+        path: [...path, "connection"],
+        stepId,
+      });
+    } else if (!ops[kind].includes(operation)) {
+      errors.push({
+        code: "pipeline_connection",
+        message: `A ${conn.adapter} ${role} uses the operation ${ops[kind].map((o) => `"${o}"`).join(" or ")}, not "${operation}".`,
+        path: [...path, "operation"],
+        stepId,
+      });
+    }
+  }
+
+  function checkExpression(
+    source: string,
+    path: (string | number)[],
+    c: StepContext | null,
+    template: boolean,
+    record = false,
+  ): void {
     const parts = template ? templateExpressions(source).map((p) => p.source) : [source];
     for (const part of parts) {
       if (part === "") continue;
@@ -278,7 +341,14 @@ export function validateFlow(input: unknown, ctx: ValidationContext = {}): Valid
       // Business ids are read after the trigger and may use any step's output.
       const known = new Set(
         c
-          ? ["trigger", "vars", ...c.loopVars, ...c.before, ...(c.inFault ? ["fault"] : [])]
+          ? [
+              "trigger",
+              "vars",
+              ...c.loopVars,
+              ...c.before,
+              ...(c.inFault ? ["fault"] : []),
+              ...(record ? ["record"] : []),
+            ]
           : ["trigger", "vars", ...seen.keys()],
       );
       for (const name of r.references) {
@@ -315,9 +385,14 @@ export function flowExpressions(doc: FlowDoc): { source: string; path: (string |
 }
 
 /** Every expression and template a step carries, with its key path. */
-function expressionsOf(step: Step): { source: string; key: (string | number)[]; template: boolean }[] {
+function expressionsOf(
+  step: Step,
+): { source: string; key: (string | number)[]; template: boolean; record?: boolean }[] {
   const e = (source: string | undefined, key: (string | number)[], template = false) =>
     source === undefined ? [] : [{ source, key, template }];
+  /** Evaluated once per record, with $record. */
+  const perRecord = (source: string | undefined, key: (string | number)[]) =>
+    source === undefined ? [] : [{ source, key, template: false, record: true }];
   switch (step.type) {
     case "invoke":
       return e(step.request, ["request"]);
@@ -339,6 +414,12 @@ function expressionsOf(step: Step): { source: string; key: (string | number)[]; 
       return e(step.body, ["body"]);
     case "js":
       return step.args.flatMap((a, i) => e(a, ["args", i]));
+    case "pipeline":
+      return [
+        ...e(step.source.params, ["source", "params"]),
+        ...perRecord(step.filter, ["filter"]),
+        ...perRecord(step.transform, ["transform"]),
+      ];
     case "switch":
       return step.cases.flatMap((c, i) => e(c.when, ["cases", i, "when"]));
     case "forEach":

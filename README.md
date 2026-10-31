@@ -55,7 +55,8 @@ docker compose up --build
 ```
 
 This starts Postgres, a local Vault (initialised and unsealed automatically; credentials are
-stored there), the web app, the stream engine (trigger URLs) and the worker. Open http://localhost:3000, create an account and a
+stored there), the web app, the stream engine (trigger URLs), the worker and the batch engine
+(pipelines). Set `ALLOW_PRIVATE_NETWORK=true` in `.env` to reach databases on your own network. Open http://localhost:3000, create an account and a
 workspace. Then:
 
 1. **Connections → New connection**: a REST API with its base URL and credentials. Press **Test**.
@@ -120,6 +121,30 @@ Values are normalised on the way in (numbers, booleans from Y/N or X flags, ISO 
 - The AI builder knows the catalog and prefers these functions for ERP-to-ERP flows. Read it over
   the API (`GET /api/v1/catalog`) or MCP (`semantic_catalog`).
 
+### Databases and batch loads
+
+**Connections → New connection → Database** connects PostgreSQL, MySQL or Oracle (including
+E-Business Suite; no Oracle client to install). In a flow:
+
+- **Call a connection** with `query` (`{ "sql": "select … where id = :id", "params": { "id": 1 } }`,
+  at most `maxRows` rows), `execute`, `insert` or `upsert` (`{ "rows": [...] }`).
+- **Batch pipeline** for moving many records: it reads a table or query in chunks by a unique
+  key, keeps and reshapes each record with JSONata (`$record`; `$translate` and lookups work),
+  and upserts or inserts chunks into the target. It runs on the batch engine with transforms on
+  worker threads, so memory stays flat however large the table is. Every chunk is checkpointed:
+  if the engine stops, the run resumes where it was. Records the target refuses are set aside
+  (shown on the run page) instead of failing the run, up to the step's limit.
+
+```json
+{ "id": "load", "type": "pipeline",
+  "source": { "connection": "ebs", "operation": "read",
+              "config": { "table": "AR.HZ_CUST_ACCOUNTS", "where": "LAST_UPDATE_DATE > :since", "key": "CUST_ACCOUNT_ID" },
+              "params": "{ \"since\": $trigger.scheduledFor }" },
+  "transform": "$translate($record, \"oracle-ebs\", \"HZ_CUST_ACCOUNTS\", \"netsuite\", \"customer\")",
+  "target": { "connection": "staging", "operation": "upsert", "config": { "table": "ns_customers", "key": "entityId" } },
+  "chunkSize": 1000 }
+```
+
 ### Every update
 
 Everything that happens (runs, activations, AI proposals and questions, connection tests) is an
@@ -152,7 +177,7 @@ docker compose up -d postgres              # or any Postgres 16
 cp .env.example .env                       # set BETTER_AUTH_SECRET and SECRETS_KEY (dev credential store)
 set -a; . ./.env; set +a
 pnpm db:migrate
-pnpm dev                                   # web on :3000, stream engine on :3001, worker
+pnpm dev                                   # web on :3000, stream engine on :3001, worker, batch engine
 ```
 
 ### Checks
@@ -160,7 +185,8 @@ pnpm dev                                   # web on :3000, stream engine on :300
 ```bash
 pnpm lint          # Biome
 pnpm typecheck
-pnpm test          # unit tests; DB tests need TEST_DATABASE_URL, real-Vault tests VAULT_TEST_ADDR
+pnpm test          # unit tests; DB tests need TEST_DATABASE_URL, real-Vault tests VAULT_TEST_ADDR,
+                   # live database adapter tests ADAPTER_TEST_POSTGRES / _MYSQL / _ORACLE (URLs)
 pnpm --filter @oicr/web e2e    # Playwright: starts a mock API, the web app, the stream engine and the worker;
                                # the AI builder runs on recorded turns (no API key needed)
 pnpm --filter @oicr/ai eval    # AI builder quality against the configured provider (needs its key;
@@ -173,10 +199,12 @@ pnpm --filter @oicr/ai eval    # AI builder quality against the configured provi
 apps/web               Next.js 16 app: UI, auth, AI chat, API (/api/v1), MCP (/mcp); forwards /t/... to the stream engine
 apps/stream            stream engine: serves trigger URLs (/t/...), runs sync flows inline, queues async ones
 apps/worker            runs queued integrations, fires schedules, delivers notifications, reaps crashed runs
+apps/batch             batch engine: runs pipelines (chunks, worker-thread transforms, checkpoints, resume)
 packages/flow-schema   FlowDoc: the integration format, validator, JSON Schema for the AI
 packages/engine        runs a FlowDoc step by step (pure; all I/O injected)
-packages/adapters      adapter interface + REST adapter, with SSRF protection
+packages/adapters      adapter interface, REST and database (PostgreSQL, MySQL, Oracle) adapters, SSRF protection
 packages/semantic      semantic catalog: entities, ERP bindings, graph, compiler, runtime functions, AI proposal checks
+packages/batch         pipeline runner (backpressure, ordered checkpoints, rejects) and transform worker pool
 packages/runtime       engine + adapters + database: execute runs, queue (pg-boss), triggers
 packages/ai            the AI builder: tool-use loop, providers (Gemini, Claude, GPT), tools, prompt, evals
 packages/platform      retry policy (backoff, jitter, Retry-After, deadlines), OpenTelemetry helpers + bootstrap

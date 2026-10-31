@@ -182,6 +182,11 @@ export const STEP_INFO: Record<StepType, { label: string; description: string; c
   stop: { label: "Stop", description: "End the run successfully.", container: false },
   return: { label: "Respond", description: "Answer the caller (sync HTTP integrations).", container: false },
   js: { label: "JavaScript", description: "Run a library function (coming later).", container: false },
+  pipeline: {
+    label: "Batch pipeline",
+    description: "Read a source in chunks, transform each record, and write it to a target.",
+    container: false,
+  },
 };
 
 /** A new step of a type with sensible starting values. */
@@ -218,5 +223,16 @@ export function newStep(doc: FlowDoc, type: StepType): Step {
       return { id, type, label: "Respond", status: 200, body: "{}" } as Step;
     case "js":
       return { id, type, label: "JavaScript", library: "", function: "", args: [] } as Step;
+    case "pipeline":
+      return {
+        id,
+        type,
+        label: "Batch pipeline",
+        source: { connection: "", operation: "read", config: {} },
+        target: { connection: "", operation: "upsert", config: {} },
+        chunkSize: 500,
+        concurrency: 2,
+        maxRejects: 100,
+      } as Step;
   }
 }

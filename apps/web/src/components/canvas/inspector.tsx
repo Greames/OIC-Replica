@@ -9,7 +9,7 @@ import {
   templateExpressions,
 } from "@oicr/flow-schema";
 import { Plus, Shuffle, Trash2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -78,6 +78,62 @@ function ExpressionField({
   );
 }
 
+/** A JSON object field (adapter settings): applied while it is valid JSON. */
+function JsonField({
+  id,
+  label,
+  value,
+  onChange,
+  hint,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  value: Record<string, unknown>;
+  onChange: (v: Record<string, unknown>) => void;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  const serialized = JSON.stringify(value ?? {}, null, 2);
+  const [text, setText] = useState(serialized);
+  const [error, setError] = useState<string | null>(null);
+  // A change from elsewhere (undo, the AI, the JSON view) replaces what is shown.
+  useEffect(() => {
+    setText((t) => {
+      try {
+        return JSON.stringify(JSON.parse(t)) === JSON.stringify(value ?? {}) ? t : serialized;
+      } catch {
+        return t;
+      }
+    });
+  }, [serialized, value]);
+  return (
+    <Field label={label} htmlFor={id} hint={error ? undefined : hint}>
+      <Textarea
+        id={id}
+        value={text}
+        rows={4}
+        disabled={disabled}
+        spellCheck={false}
+        className={cn("min-h-0 font-mono text-xs", error && "border-danger")}
+        aria-invalid={Boolean(error)}
+        onChange={(e) => {
+          setText(e.target.value);
+          try {
+            const parsed = JSON.parse(e.target.value || "{}");
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Give a JSON object.");
+            setError(null);
+            onChange(parsed);
+          } catch (err) {
+            setError((err as Error).message);
+          }
+        }}
+      />
+      {error && <p className="text-[11px] text-danger">{error}</p>}
+    </Field>
+  );
+}
+
 export function Inspector({
   doc,
   step,
@@ -92,7 +148,7 @@ export function Inspector({
   doc: FlowDoc;
   step: Step;
   issues: Issue[];
-  connections: { identifier: string; role: string; status: string }[];
+  connections: { identifier: string; role: string; status: string; adapter?: string }[];
   disabled: boolean;
   onChange: (patch: Patch) => void;
   onDelete: () => void;
@@ -201,6 +257,93 @@ export function Inspector({
               />
             </Field>
             {text("timeoutSeconds", "Timeout (s)", { type: "number" })}
+          </div>
+        </>
+      )}
+
+      {s.type === "pipeline" && (
+        <>
+          {(["source", "target"] as const).map((end) => (
+            <div key={end} className="flex flex-col gap-3 rounded-lg border border-border p-2">
+              <div className="text-xs font-medium">{end === "source" ? "Read from" : "Write to"}</div>
+              <Field label="Connection" htmlFor={f(`${end}-connection`)}>
+                <Select
+                  id={f(`${end}-connection`)}
+                  value={s[end].connection}
+                  disabled={disabled}
+                  onChange={(e) => onChange({ [end]: { ...s[end], connection: e.target.value } })}
+                >
+                  <option value="">Pick a connection…</option>
+                  {connections
+                    .filter((c) => c.role !== "trigger" && (!c.adapter || c.adapter === "database"))
+                    .map((c) => (
+                      <option key={c.identifier} value={c.identifier}>
+                        {c.identifier}
+                        {c.status !== "configured" ? " (not tested)" : ""}
+                      </option>
+                    ))}
+                  {s[end].connection && !connections.some((c) => c.identifier === s[end].connection) && (
+                    <option value={s[end].connection}>{s[end].connection} (missing)</option>
+                  )}
+                </Select>
+              </Field>
+              <Field label="Operation" htmlFor={f(`${end}-operation`)}>
+                <Select
+                  id={f(`${end}-operation`)}
+                  value={s[end].operation}
+                  disabled={disabled}
+                  onChange={(e) => onChange({ [end]: { ...s[end], operation: e.target.value } })}
+                >
+                  {(end === "source" ? ["read"] : ["upsert", "insert"]).map((o) => (
+                    <option key={o}>{o}</option>
+                  ))}
+                </Select>
+              </Field>
+              <JsonField
+                id={f(`${end}-config`)}
+                label="Settings (JSON)"
+                value={s[end].config}
+                disabled={disabled}
+                hint={
+                  end === "source"
+                    ? '{ "table": "HZ_CUST_ACCOUNTS", "where": "LAST_UPDATE_DATE > :since", "key": "CUST_ACCOUNT_ID" } or { "sql": "select …", "key": "ID" }. The key is unique and sortable; a stopped run resumes after the last key.'
+                    : '{ "table": "customers", "key": ["id"] }. Upserts update rows with the same key, so a replayed chunk never duplicates.'
+                }
+                onChange={(config) => onChange({ [end]: { ...s[end], config } })}
+              />
+              {end === "source" && (
+                <ExpressionField
+                  id={f("params")}
+                  label="Parameters (JSONata, optional)"
+                  value={s.source.params ?? ""}
+                  disabled={disabled}
+                  hint='Evaluated once: values for :name in the SQL, e.g. { "since": $trigger.scheduledFor }.'
+                  onChange={(v) => onChange({ source: { ...s.source, params: v || undefined } })}
+                />
+              )}
+            </div>
+          ))}
+          <ExpressionField
+            id={f("filter")}
+            label="Keep only (JSONata, optional)"
+            value={s.filter ?? ""}
+            disabled={disabled}
+            hint="Per record, read as $record: false skips it."
+            onChange={(v) => onChange({ filter: v || undefined })}
+          />
+          <ExpressionField
+            id={f("transform")}
+            label="Transform each record (JSONata, optional)"
+            value={s.transform ?? ""}
+            rows={4}
+            disabled={disabled}
+            hint="Per record ($record): the record to write. $translate, $lookupValue and $trigger work here."
+            onChange={(v) => onChange({ transform: v || undefined })}
+          />
+          <div className="grid grid-cols-3 gap-2">
+            {text("chunkSize", "Chunk size", { type: "number" })}
+            {text("concurrency", "In parallel", { type: "number" })}
+            {text("maxRejects", "Max rejects", { type: "number" })}
           </div>
         </>
       )}

@@ -3,6 +3,7 @@ export * from "./auth.js";
 export * from "./core.js";
 export * from "./events.js";
 export * from "./lookups.js";
+export * from "./pipelines.js";
 export * from "./runtime.js";
 export * from "./secrets.js";
 export * from "./semantic.js";

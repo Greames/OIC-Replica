@@ -11,6 +11,8 @@ export interface StepContext {
   loopVars: string[];
   /** ids of steps that ran before this one on every path that reaches it. */
   before: string[];
+  /** true when the step repeats: inside a forEach or while. */
+  inLoop: boolean;
 }
 
 /** Child step lists of a container step, with the key used in the path. */
@@ -43,20 +45,22 @@ export function walkSteps(doc: FlowDoc, visit: (ctx: StepContext) => void): void
     inFault: boolean,
     loopVars: string[],
     before: string[],
+    inLoop: boolean,
   ): void => {
     const seen = [...before];
     steps.forEach((step, i) => {
       const here = [...path, i];
-      visit({ step, path: here, parent, inFault, loopVars, before: [...seen] });
+      visit({ step, path: here, parent, inFault, loopVars, before: [...seen], inLoop });
       const innerLoop = step.type === "forEach" ? [...loopVars, step.as] : loopVars;
+      const repeats = inLoop || step.type === "forEach" || step.type === "while";
       for (const child of childLists(step)) {
-        go(child.steps, [...here, ...child.key], step, inFault || child.fault, innerLoop, [...seen]);
+        go(child.steps, [...here, ...child.key], step, inFault || child.fault, innerLoop, [...seen], repeats);
       }
       seen.push(step.id);
     });
   };
-  go(doc.steps, ["steps"], null, false, [], [doc.trigger.id]);
-  if (doc.onFault) go(doc.onFault, ["onFault"], null, true, [], [doc.trigger.id]);
+  go(doc.steps, ["steps"], null, false, [], [doc.trigger.id], false);
+  if (doc.onFault) go(doc.onFault, ["onFault"], null, true, [], [doc.trigger.id], false);
 }
 
 /** Finds a step by id anywhere in the document. */

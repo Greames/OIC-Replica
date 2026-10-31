@@ -55,7 +55,19 @@ export function ConnectionForm({ adapter, projects, initial }: ConnectionFormPro
           {f.label}
           {f.required && <span className="text-danger"> *</span>}
         </Label>
-        {f.type === "keyvalue" ? (
+        {f.type === "select" ? (
+          <Select
+            id={id}
+            name={f.key}
+            defaultValue={value === undefined ? (f.options?.[0]?.value ?? "") : String(value)}
+          >
+            {f.options?.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </Select>
+        ) : f.type === "keyvalue" ? (
           <Textarea
             id={id}
             name={f.key}
@@ -112,8 +124,12 @@ export function ConnectionForm({ adapter, projects, initial }: ConnectionFormPro
           <Label htmlFor="role">Used as</Label>
           <Select id="role" name="role" defaultValue={initial?.role ?? "invoke"}>
             <option value="invoke">Invoke: integrations call it</option>
-            <option value="trigger">Trigger: it calls integrations</option>
-            <option value="trigger_invoke">Both</option>
+            {adapter.roles.includes("trigger") && (
+              <>
+                <option value="trigger">Trigger: it calls integrations</option>
+                <option value="trigger_invoke">Both</option>
+              </>
+            )}
           </Select>
         </div>
         <div className="flex flex-col gap-1.5">

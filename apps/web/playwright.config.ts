@@ -49,6 +49,13 @@ export default defineConfig({
           env: env({ STREAM_PORT: "3001" }),
         },
         {
+          // Runs integrations with pipeline steps.
+          command: "pnpm --filter @oicr/batch-engine start",
+          wait: { stdout: /batch engine started/ },
+          env: env({ BATCH_THREADS: "2" }),
+          stdout: "pipe",
+        },
+        {
           command: "pnpm --filter @oicr/worker start",
           // No port: wait for its start-up log line.
           wait: { stdout: /worker started/ },

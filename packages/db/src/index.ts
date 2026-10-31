@@ -11,6 +11,7 @@ export * from "./repo/events.js";
 export * from "./repo/instances.js";
 export * from "./repo/integrations.js";
 export * from "./repo/lookups.js";
+export * from "./repo/pipelines.js";
 export * from "./repo/projects.js";
 export * from "./repo/semantic.js";
 export * from "./repo/tenants.js";

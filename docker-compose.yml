@@ -60,6 +60,8 @@ services:
       DATABASE_URL: postgres://oicr_app:${APP_DB_PASSWORD:-oicr_app}@postgres:5432/oicr
       QUEUE_DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
       STREAM_URL: http://stream:3001
+      # Connection tests run here: same rule as the engines for hosts on private networks.
+      ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-false}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       SECRETS_BACKEND: vault
@@ -108,6 +110,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       STREAM_PORT: "3001"
+      ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-false}
     volumes: ["vault-token:/vault-token:ro"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -133,10 +136,35 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+      # Database connections to hosts on private networks (self-hosted installs next to the ERP).
+      ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-false}
     volumes: ["vault-token:/vault-token:ro"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     restart: unless-stopped
+
+  # The batch engine: runs integrations with pipeline steps (chunked, checkpointed loads).
+  batch:
+    build: .
+    command: ["node", "apps/batch/dist/main.js"]
+    environment:
+      DATABASE_URL: postgres://oicr_app:${APP_DB_PASSWORD:-oicr_app}@postgres:5432/oicr
+      QUEUE_DATABASE_URL: postgres://oicr:oicr@postgres:5432/oicr
+      SECRETS_BACKEND: vault
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN_FILE: /vault-token/token
+      VAULT_KV_MOUNT: oicr
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      BATCH_CONCURRENCY: ${BATCH_CONCURRENCY:-2}
+      BATCH_THREADS: ${BATCH_THREADS:-2}
+      ALLOW_PRIVATE_NETWORK: ${ALLOW_PRIVATE_NETWORK:-false}
+    volumes: ["vault-token:/vault-token:ro"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    # Lets running pipelines finish a chunk; anything still running resumes from its checkpoint.
+    stop_grace_period: 40s
 
 volumes:
   pgdata:

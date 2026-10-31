@@ -64,6 +64,13 @@
       "when": 1793088939104,
       "tag": "0008_semantic_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793428894433,
+      "tag": "0009_batch_pipelines",
+      "breakpoints": true
     }
   ]
 }

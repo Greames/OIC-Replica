@@ -1,4 +1,4 @@
-import { getInstance, getIntegration, NotFoundError } from "@oicr/db";
+import { getInstance, getIntegration, listCheckpoints, listRejects, NotFoundError } from "@oicr/db";
 import { FlowDoc } from "@oicr/flow-schema";
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
@@ -34,6 +34,10 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
     throw e;
   });
   const live = run.status === "queued" || run.status === "running";
+  const [pipelines, rejects] = await Promise.all([
+    listCheckpoints(db, viewer, id),
+    listRejects(db, viewer, id, { limit: 50 }),
+  ]);
   const integration = await getIntegration(db, viewer, run.integrationId).catch(() => null);
   const doc = integration ? FlowDoc.safeParse(integration.definition) : null;
   const sameVersion = integration?.definitionHash === run.definitionHash;
@@ -92,6 +96,85 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
           <div className="mt-1">{run.tracingLevel}</div>
         </Card>
       </div>
+
+      {pipelines.length > 0 && (
+        <section aria-label="Pipelines" className="mb-6">
+          <h2 className="mb-3 flex flex-wrap items-baseline gap-2 font-medium">
+            Pipelines
+            {run.attempts > 1 && (
+              <span className="text-xs font-normal text-fg-muted">
+                Resumed {run.attempts - 1} time(s) from its checkpoints after the batch engine stopped.
+              </span>
+            )}
+          </h2>
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-border text-left text-xs text-fg-muted">
+                <tr>
+                  {["Step", "Status", "Read", "Written", "Skipped", "Rejected", "Chunks"].map((h) => (
+                    <th key={h} className="px-4 py-2 font-medium">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border tabular-nums">
+                {pipelines.map((p) => (
+                  <tr key={p.stepId}>
+                    <td className="px-4 py-2 font-mono">{p.stepId}</td>
+                    <td className="px-4 py-2">
+                      <Badge>{p.status === "done" ? "finished" : live ? "running" : "stopped"}</Badge>
+                    </td>
+                    <td className="px-4 py-2">{p.read.toLocaleString()}</td>
+                    <td className="px-4 py-2">{p.written.toLocaleString()}</td>
+                    <td className="px-4 py-2">{p.filtered.toLocaleString()}</td>
+                    <td className={`px-4 py-2 ${p.rejected ? "text-danger" : ""}`}>{p.rejected.toLocaleString()}</td>
+                    <td className="px-4 py-2">{p.chunks}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+          {rejects.length > 0 && (
+            <details className="mt-3" open={!live}>
+              <summary className="cursor-pointer text-sm font-medium">
+                Rejected records{rejects.length === 50 ? " (first 50)" : ""}
+              </summary>
+              <Card className="mt-2 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="border-b border-border text-left text-xs text-fg-muted">
+                    <tr>
+                      {["Step", "Where", "Why", "Record"].map((h) => (
+                        <th key={h} className="px-4 py-2 font-medium">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {rejects.map((r) => (
+                      <tr key={r.id} className="align-top">
+                        <td className="px-4 py-2 font-mono text-xs">{r.stepId}</td>
+                        <td className="px-4 py-2 text-xs whitespace-nowrap">
+                          {r.stage === "write" ? "target refused" : "transform"} · chunk {r.chunk + 1}, row{" "}
+                          {r.rowIndex + 1}
+                        </td>
+                        <td className="px-4 py-2 text-xs">
+                          <div className="font-mono text-danger">{r.code}</div>
+                          <div>{r.message}</div>
+                        </td>
+                        <td className="max-w-md px-4 py-2">
+                          <pre className="overflow-x-auto font-mono text-[11px]">{JSON.stringify(r.record)}</pre>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            </details>
+          )}
+        </section>
+      )}
 
       <Payload label="Trigger input" value={run.input} />
       {run.output !== null && (

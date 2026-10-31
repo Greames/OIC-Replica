@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@oicr/adapters": "workspace:*",
+    "@oicr/batch": "workspace:*",
     "@oicr/db": "workspace:*",
     "@oicr/engine": "workspace:*",
     "@oicr/flow-schema": "workspace:*",

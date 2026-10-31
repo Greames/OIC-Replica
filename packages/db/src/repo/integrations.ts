@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow } from "@oicr/flow-schema";
+import { adapters, batchOperations } from "@oicr/adapters";
+import { emptyFlow, type FlowDoc, hashFlow, type Issue, validateFlow, walkSteps } from "@oicr/flow-schema";
 import { compileSemantics, type SemanticPlan } from "@oicr/semantic";
 import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -40,6 +41,32 @@ export class InvalidStateError extends Error {
   }
 }
 
+/** Each pipeline's source and target configuration, checked by its adapter. */
+function pipelineConfigIssues(doc: FlowDoc, connections: Record<string, { adapter: string }>): Issue[] {
+  const issues: Issue[] = [];
+  walkSteps(doc, ({ step, path }) => {
+    if (step.type !== "pipeline") return;
+    for (const [kind, end] of [
+      ["read", step.source],
+      ["write", step.target],
+    ] as const) {
+      const batch = adapters[connections[end.connection]?.adapter ?? ""]?.batch;
+      if (!batch?.[kind === "read" ? "readOperations" : "writeOperations"].includes(end.operation)) continue;
+      try {
+        batch.checkConfig(kind, end.operation, end.config);
+      } catch (e) {
+        issues.push({
+          code: "pipeline_connection",
+          message: `${kind === "read" ? "Source" : "Target"}: ${(e as Error).message}`,
+          path: [...path, kind === "read" ? "source" : "target", "config"],
+          stepId: step.id,
+        });
+      }
+    }
+  });
+  return issues;
+}
+
 /** Validates against the org's real connections, lookups and semantic bindings; empty flows stay drafts. */
 async function check(db: Db, orgId: string, definition: unknown) {
   const [connections, lookupRows, graph] = await Promise.all([
@@ -51,15 +78,17 @@ async function check(db: Db, orgId: string, definition: unknown) {
     connections,
     lookups: lookupRows.map((l) => l.name),
     semanticObjects: graph.objectIndex(),
+    batchOperations: batchOperations(),
   });
   const doc = result.doc ?? (definition as FlowDoc);
+  const errors: Issue[] = [...result.errors, ...(result.doc ? pipelineConfigIssues(result.doc, connections) : [])];
   const hasSteps = Array.isArray((definition as FlowDoc)?.steps) && (definition as FlowDoc).steps.length > 0;
   return {
     definition: doc,
     hash: await hashFlow(doc),
-    errors: result.errors as Issue[],
+    errors,
     warnings: result.warnings,
-    status: (result.ok && hasSteps ? "configured" : "draft") as "configured" | "draft",
+    status: (errors.length === 0 && result.ok && hasSteps ? "configured" : "draft") as "configured" | "draft",
     graph,
   };
 }

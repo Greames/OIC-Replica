@@ -1,6 +1,6 @@
 import { FlowDoc } from "@oicr/flow-schema";
 import { describe, expect, it, vi } from "vitest";
-import { type EngineDeps, type InvokeCall, runFlow, type StepRecord } from "./index.js";
+import { type EngineDeps, type InvokeCall, type PipelineCall, runFlow, type StepRecord } from "./index.js";
 
 const flow = (over: Record<string, unknown>) =>
   FlowDoc.parse({ schemaVersion: 1, style: "scheduled", trigger: { id: "t", type: "schedule" }, steps: [], ...over });
@@ -326,6 +326,46 @@ describe("runFlow", () => {
     await runFlow(doc, { entityId: "C-1" }, { ...h.deps, functions: { toSemantic } });
     expect(h.records[0]?.output).toBe("C-1");
     expect(toSemantic).toHaveBeenCalledWith({ entityId: "C-1" }, "netsuite", "customer");
+  });
+
+  it("hands pipeline steps to the batch engine with params and a data snapshot", async () => {
+    const doc = flow({
+      variables: { since: { type: "string", initial: "2026-01-01" } },
+      steps: [
+        {
+          id: "load",
+          type: "pipeline",
+          source: {
+            connection: "ebs",
+            operation: "read",
+            config: { table: "T", key: "ID" },
+            params: '{ "since": $vars.since }',
+          },
+          target: { connection: "dw", operation: "upsert", config: { table: "t", key: "id" } },
+        },
+        { id: "after", type: "map", expression: "$load.written" },
+      ],
+    });
+    const h = harness();
+    const pipeline = vi.fn(async (_call: PipelineCall) => ({ read: 10, written: 9, rejected: 1 }));
+    const r = await runFlow(doc, { scheduledFor: "x" }, { ...h.deps, pipeline });
+    expect(r.status).toBe("succeeded");
+    expect(h.records[0]).toMatchObject({
+      input: { since: "2026-01-01" },
+      output: { read: 10, written: 9, rejected: 1 },
+    });
+    expect(h.records[1]?.output).toBe(9);
+    expect(pipeline.mock.calls[0]![0]).toMatchObject({
+      params: { since: "2026-01-01" },
+      bindings: { trigger: { scheduledFor: "x" }, vars: { since: "2026-01-01" } },
+    });
+
+    const failing = vi.fn(async () => {
+      throw Object.assign(new Error("too many"), { code: "too_many_rejects", counts: { read: 5 } });
+    });
+    const f = await runFlow(doc, {}, { ...h.deps, pipeline: failing });
+    expect(f.fault).toMatchObject({ code: "too_many_rejects", stepId: "load", details: { counts: { read: 5 } } });
+    expect((await runFlow(doc, {}, harness().deps)).fault?.code).toBe("batch_engine_required");
   });
 
   it("turns expression errors into faults on the step", async () => {

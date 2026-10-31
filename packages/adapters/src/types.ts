@@ -38,6 +38,50 @@ export interface TestResult {
   details?: Record<string, unknown>;
 }
 
+export interface BatchReadArgs {
+  operation: string;
+  config: Record<string, unknown>;
+  /** The source's parameters (the pipeline's `params` expression). */
+  params: Record<string, unknown>;
+  /** Where the previous attempt stopped (a cursor from an earlier chunk), or null to start. */
+  after: unknown;
+  chunkSize: number;
+  signal?: AbortSignal;
+}
+
+export interface BatchChunk {
+  rows: Record<string, unknown>[];
+  /** Resume position after this chunk (JSON); passed back as `after`. */
+  cursor: unknown;
+}
+
+export interface BatchWriteArgs {
+  operation: string;
+  config: Record<string, unknown>;
+  rows: Record<string, unknown>[];
+  signal?: AbortSignal;
+}
+
+export interface BatchWriteResult {
+  written: number;
+  /** Rows the target refused, by index in `rows`; the others were written. */
+  rejects: { index: number; code: string; message: string }[];
+}
+
+/**
+ * Bulk reads and writes for the batch engine. Reads page through the source
+ * and can resume from a cursor; writes are idempotent where the operation
+ * allows (upserts), so a chunk replayed after a crash does not duplicate.
+ */
+export interface BatchCapabilities {
+  readOperations: string[];
+  writeOperations: string[];
+  /** Checks a read or write configuration without connecting (activation-time errors). */
+  checkConfig(kind: "read" | "write", operation: string, config: Record<string, unknown>): void;
+  read(conn: ConnectionConfig, args: BatchReadArgs): AsyncIterable<BatchChunk>;
+  write(conn: ConnectionConfig, args: BatchWriteArgs): Promise<BatchWriteResult>;
+}
+
 export interface Adapter<P = Record<string, unknown>> {
   id: string;
   name: string;
@@ -50,6 +94,10 @@ export interface Adapter<P = Record<string, unknown>> {
   operationHelp: string;
   test(conn: ConnectionConfig): Promise<TestResult>;
   invoke(conn: ConnectionConfig, args: InvokeArgs): Promise<unknown>;
+  /** Present when the adapter can be a pipeline's source or target. */
+  batch?: BatchCapabilities;
+  /** Releases pooled connections (process shutdown). */
+  close?(): Promise<void>;
 }
 
 /** A failure the engine records as a fault: $fault.code / $fault.message. */
